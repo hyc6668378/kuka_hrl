@@ -10,9 +10,19 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set(style="darkgrid", font_scale=1.2)
+import argparse
 
 import tensorflow as tf
 config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
+
+def common_arg_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment_name", type=str)
+    parser.add_argument('--use_sample_dist', action="store_true")
+    parser.add_argument('--use_half_dete', action="store_true")
+    parser.add_argument('--use_adv', action="store_true")
+    dict_args = vars(parser.parse_args())
+    return dict_args
 
 class ReplayBuffer:
     """
@@ -58,7 +68,7 @@ class sac_ES:
         steps_per_epoch=5000, epochs=100, gamma=0.7,
         polyak=0.995, lr=3e-4, alpha=0.2, batch_size=1024, start_steps=1,
         max_ep_len=1000, memory_size=int(1e+4), max_kl=0.01, experiment_name='none', use_adv=False,
-        use_half_dete=False, use_sample_dist=False, save_freq=1, Test_agent=False):
+        use_half_dete=False, use_sample_dist=False, Test_agent=False):
 
         tf.set_random_seed(seed)
         np.random.seed(seed)
@@ -77,6 +87,7 @@ class sac_ES:
         self.steps_per_epoch = steps_per_epoch
         self.max_kl = max_kl
         self.use_adv = use_adv
+        self.entropy_too_low = False
         self.win = None
         if Test_agent:
             from visdom import Visdom
@@ -99,29 +110,22 @@ class sac_ES:
 
             # Summary
             self.experiment_name = experiment_name
-            self.writer = tf.summary.FileWriter("logs/" + self.experiment_name)
+            self.writer = tf.compat.v1.summary.FileWriter("logs/" + self.experiment_name)
             self.ep_ret_ph = tf.placeholder(tf.float32, shape=(), name="ep_ret_ph")
             self.ep_len_ph = tf.placeholder(tf.float32, shape=(), name="ep_len_ph")
-            self.test_summary = tf.summary.merge([tf.summary.scalar('EP_ret', self.ep_ret_ph, family='test'),
-                                                  tf.summary.scalar('EP_len', self.ep_len_ph, family='test')])
+            self.test_summary = tf.compat.v1.summary.merge([tf.compat.v1.summary.scalar('EP_ret', self.ep_ret_ph, family='test'),
+                                                  tf.compat.v1.summary.scalar('EP_len', self.ep_len_ph, family='test')])
             self.sess.run(tf.global_variables_initializer())
             self.sess.run(self.V_target_init)
 
             _ = os.system("clear")
-            #
-            # while input_var not in ['yes', 'no']:
-            #     input_var = input("是否用 siamese_cnn 初始化卷积层参数. [yes/no]?")
-            # if input_var == 'yes':
-            #     siamese_cnn_dict = np.load('model/siamese_cnn.npy', allow_pickle=True).item()
-            #     for para_Name in siamese_cnn_dict:
-            #         for var in [v for v in tf.trainable_variables() if v.name in para_Name]:
-            #             self.sess.run(tf.assign(var, siamese_cnn_dict[para_Name]))
-
+            # if input('\n从 {} 加载模型 ? '.format(experiment_name))=='yes':
+            #     self.load()
             Count_Variables()
 
             print('Trainable_variables:')
-            for v in tf.trainable_variables():
-                print(v)
+            for v in tf.compat.v1.trainable_variables():
+                print('{}\t  {}'.format(v.name, str(v.shape)))
 
     def __make_model(self):
         self.x_b_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x_b_ph')
@@ -163,12 +167,8 @@ class sac_ES:
         # Policy Improvement
         with tf.variable_scope('Policy_Improvement'):
             # (samples_per_state, batch, self.act_dim) --> (-1, self.act_dim)
-            if self.use_sample_dist:
-                self.a_flatten = tf.clip_by_value(tf.reshape(self.sample_dist.sample(self.ac_per_state), [-1, self.act_dim]),
-                                              self.env.action_space.low[0], self.env.action_space.high[0])
-            else:
-                self.a_flatten = tf.clip_by_value(tf.reshape(self.dist.sample(self.ac_per_state), [-1, self.act_dim]),
-                                              self.env.action_space.low[0], self.env.action_space.high[0])
+            self.a_flatten_s_dist =  self._samp_a( self.sample_dist )
+            self.a_flatten_dist   =  self._samp_a( self.dist )
 
             if self.use_adv:
                 q = self.q1 - self.v_target
@@ -185,7 +185,7 @@ class sac_ES:
             likelihood_term = q_ij * logp_ij
 
         # Value train op
-        value_optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
+        value_optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=self.lr)
         value_params = get_vars('main/q') + get_vars('main/v')
 
         self.train_value_op = value_optimizer.minimize(value_loss, var_list=value_params)
@@ -196,21 +196,26 @@ class sac_ES:
 
         # Maximum likelihood
         pi_loss = - tf.reduce_sum( likelihood_term )
-        pi_optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
+        pi_optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=self.lr)
         self.train_pi_op = pi_optimizer.minimize(pi_loss, var_list=get_vars('main/pi'))
 
         var_list = tf.global_variables()
-        self.saver = tf.train.Saver(var_list=var_list, max_to_keep=1)
+        self.saver = tf.compat.v1.train.Saver(var_list=var_list, max_to_keep=1)
 
         assert tf.get_collection(tf.GraphKeys.UPDATE_OPS) == []  # 确保没有 batch norml
 
         # summary
-        self.a_summary = tf.summary.merge([tf.summary.scalar('pi_loss', pi_loss, family='actor')])
-        self.c_summary = tf.summary.merge([tf.summary.scalar('value_loss', value_loss, family='critic'),
-                                           tf.summary.scalar('q1_loss', q1_loss, family = 'critic'),
-                                           tf.summary.scalar('q2_loss', q2_loss, family='critic'),
-                                           tf.summary.scalar('v_loss', v_loss, family='critic'),
-                                           tf.summary.scalar('pi_entropy', self.entropy, family='actor')])
+        self.a_summary = tf.compat.v1.summary.merge([tf.compat.v1.summary.scalar('pi_loss', pi_loss, family='actor')])
+        self.c_summary = tf.compat.v1.summary.merge([tf.compat.v1.summary.scalar('value_loss', value_loss, family='critic'),
+                                           tf.compat.v1.summary.scalar('q1_loss', q1_loss, family = 'critic'),
+                                           tf.compat.v1.summary.scalar('q2_loss', q2_loss, family='critic'),
+                                           tf.compat.v1.summary.scalar('v_loss', v_loss, family='critic'),
+                                           tf.compat.v1.summary.scalar('pi_entropy', self.entropy, family='actor')])
+
+    def _samp_a(self, dist):
+        # (samples_per_state, batch, self.act_dim) --> (-1, self.act_dim)
+        a = tf.reshape(dist.sample(self.ac_per_state), [-1, self.act_dim]),
+        return tf.clip_by_value( a , self.env.action_space.low[0], self.env.action_space.high[0])
 
     def Save(self):
         path = "model/" + self.experiment_name + "/model.ckpt"
@@ -219,7 +224,7 @@ class sac_ES:
 
     def load(self):
         path = "model/" + self.experiment_name + "/model.ckpt"
-        print("Load model From the: '{}'".format(path) )
+        print("\nLoad model From the: '{}'\n".format(path) )
         self.saver.restore(self.sess, save_path=path)
 
     def _choose_action(self, o, deterministic=False):
@@ -230,7 +235,8 @@ class sac_ES:
     def learn(self):
         batch = self.replay_buffer.sample_batch(self.batch_size)
 
-        opt_step_1 = [self.train_value_op, self.a_flatten, self.c_summary]
+        a_flatten_opt = self.a_flatten_s_dist if self.entropy_too_low else self.a_flatten_dist
+        opt_step_1 = [self.train_value_op, a_flatten_opt, self.c_summary]
         feed_step_1 = { self.x_b_ph: batch['obs1_b'],
                         self.x_l_ph: batch['obs1_l'],
                         self.x2_b_ph: batch['obs2_b'],
@@ -239,18 +245,21 @@ class sac_ES:
                         self.r_ph: batch['rews'],
                         self.d_ph: batch['done']
                         }
-        _, a_flatten, c_s= self.sess.run(opt_step_1, feed_step_1 )
+        _, a_Flatten, c_s= self.sess.run(opt_step_1, feed_step_1 )
         self.writer.add_summary(c_s)
 
-        feed_step_2 = {self.a_ph: a_flatten,
+        feed_step_2 = {self.a_ph: np.squeeze(a_Flatten),
                        self.x_b_ph: np.tile( batch['obs1_b'], [self.ac_per_state, 1, 1 ,1]),
                        self.x_l_ph: np.tile(batch['obs1_l'], [self.ac_per_state, 1, 1, 1]),
                        self.x2_b_ph: np.tile(batch['obs2_b'], [self.ac_per_state, 1, 1, 1]),
                        self.x2_l_ph: np.tile( batch['obs2_l'], [self.ac_per_state, 1, 1, 1])}
-        opt_step_2 = [self.train_pi_op, self.a_summary]
+        opt_step_2 = [self.entropy, self.train_pi_op, self.a_summary]
 
         # update policy by max_likelihood
-        _, a_s = self.sess.run( opt_step_2, feed_step_2 )
+        entropy, _, a_s = self.sess.run( opt_step_2, feed_step_2 )
+
+        self.entropy_too_low = True  if entropy < -0.5 else False
+
         self.writer.add_summary(a_s)
 
         # update target_net and old pi
@@ -296,7 +305,6 @@ class sac_ES:
         for t in tqdm(range(total_steps)):
 
             if t > self.start_steps:
-
                 if self.use_half_dete:
                     deterministic = True if np.random.randn() > 0 else False
                 a = self._choose_action(o, deterministic)
@@ -322,7 +330,7 @@ class sac_ES:
 
             if d or (ep_len == self.max_ep_len):
 
-                if (t+1) >= 516: [self.learn() for _ in range(ep_len)]
+                if (t+1) >= 500: [self.learn() for _ in range(ep_len)]
 
                 ep_s = self.sess.run(self.test_summary, {self.ep_ret_ph: ep_ret,
                                                            self.ep_len_ph: ep_len})
@@ -355,11 +363,13 @@ def R_plot(r_plot, viz, win):
     return viz.matplot(plt, win=win)
 
 if __name__ == '__main__':
-    import hyp
-
-    if input('删除 '+"logs/"+hyp.EXPERIMENT_NAME+' ? ')!='no':
-        import shutil
-        shutil.rmtree("logs/"+hyp.EXPERIMENT_NAME)
+    args = common_arg_parser()
+    # if input('删除 '+"logs/"+args['experiment_name']+' ? ')!='no':
+    import shutil
+    try:
+        shutil.rmtree("logs/"+args['experiment_name'])
+    except:
+        pass
 
     env_fn = lambda : KukaDiverseObjectEnv(renders=False,
                          maxSteps=15,
@@ -368,11 +378,8 @@ if __name__ == '__main__':
                          numObjects=1, dv=1.0,
                          isTest=False)
 
-    model = sac_ES(env_fn, steps_per_epoch=15, epochs=500, gamma=0.9,
-                   polyak=0.995, memory_size=10000, lr=3e-4, alpha=0.2,
-                   batch_size=64, start_steps=500, max_ep_len=500,
-                   experiment_name=hyp.EXPERIMENT_NAME, use_adv=hyp.ADV,
-                   use_half_dete=hyp.USE_HALF_DETE,
-                   use_sample_dist=hyp.USE_SAMPLE_DIST)
+    model = sac_ES(env_fn, steps_per_epoch=15, epochs=700, gamma=0.9,
+                   polyak=0.995, memory_size=20000, lr=3e-4, alpha=0.2,
+                   batch_size=64, start_steps=300, max_ep_len=500, **args)
 
     model.rollout()
