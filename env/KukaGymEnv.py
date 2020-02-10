@@ -403,31 +403,29 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             return -1
 
         fs = self._low_dim_full_state()
-        # 随便选一个物体
         current_End_EffectorPos = np.array( p.getLinkState(self._kuka.kukaUid,
                                                            self._kuka.kukaEndEffectorIndex)[0] )
         obj = fs[:3]
         obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)# 物体的坐标和真实稍稍错位一点， 一点点调出来的。
-
         gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
         dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
         dis = np.sqrt(np.sum(dis**2))
 
         # attach obj
         if sum( [len(p.getContactPoints(bodyA=uid, bodyB=self._kuka.kukaUid)) != 0 for uid in self._objectUids]):
-            self._success = True
-            return 7
-
-        if dis>0.57: r = 0
-        elif 0.37< dis <=0.57: r = 1
-        elif 0.27< dis <=0.37: r = 2
-        elif 0.18< dis <=0.27: r = 3
-        elif 0.14< dis <=0.18: r = 4
-        elif 0.09 < dis <= 0.14: r = 5
-        elif 0.05 < dis <= 0.09: r = 6
-        else:
             r = 7
             self._success = True
+        else:
+            if dis>0.57: r = 0
+            elif 0.37< dis <=0.57: r = 1
+            elif 0.27< dis <=0.37: r = 2
+            elif 0.18< dis <=0.27: r = 3
+            elif 0.14< dis <=0.18: r = 4
+            elif 0.09 < dis <= 0.14: r = 5
+            elif 0.05 < dis <= 0.09: r = 6
+            else:
+                r = 7
+                self._success = True
 
 # print("rank: {}".format(r))
 
