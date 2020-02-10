@@ -12,11 +12,12 @@ from pkg_resources import parse_version
 import gym
 from gym.utils import seeding
 import random
-from alg.embedding_map import _close_to_obj, whether_can_grasp_or_not
+# from alg.embedding_map import _close_to_obj, whether_can_grasp_or_not
 from PIL import Image
 from copy import copy
 
-class KukaDiverseObjectEnv(Kuka):
+
+class KukaDiverseObjectEnv(Kuka, gym.Env):
     """Class for Kuka environment with diverse objects.
 
     In each episode some objects are chosen from a set of 1000 diverse objects.
@@ -35,6 +36,7 @@ class KukaDiverseObjectEnv(Kuka):
                  height=128,
                  numObjects=1,
                  isTest=False):
+
         # Environment Characters
         self._timeStep,     self._urdfRoot     =   1. / 240.     , urdfRoot
         self._actionRepeat, self._isTest       =   actionRepeat  , isTest
@@ -45,8 +47,8 @@ class KukaDiverseObjectEnv(Kuka):
         self._width,        self._height       =   width         , height
         self._success,      self._numObjects   =   False         , numObjects
 
-        self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
-        self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
+        # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
+        # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
         self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3), dtype=np.uint32)
 
         if self._renders:
@@ -66,20 +68,23 @@ class KukaDiverseObjectEnv(Kuka):
         self.action_space = spaces.Box(low=-1, high=1, shape=(5,))  # dx, dy, dz, da
 
     def _reset(self):
-        # Set the camera settings.
-        look = [1.5, 0.35, 0.7]
+        look = [1.9, 0.5, 1]
         roll = -10
         pitch = -35
         yaw = 110
 
-        # look = [0.23, 0.2, 0.54]
-        # pitch = -56 + self._cameraRandom * np.random.uniform(-3, 3)
-        # yaw = 245 + self._cameraRandom * np.random.uniform(-3, 3)
-        # roll = 0
-
+        look_2 = [-0.3, 0.5, 1.3]
+        pitch_2 = -56
+        yaw_2 = 245
+        roll_2 = 0
         distance = 1.
+
+        self._view_matrix_2 = p.computeViewMatrixFromYawPitchRoll(
+            look_2, distance, yaw_2, pitch_2, roll_2, 2)
+
         self._view_matrix = p.computeViewMatrixFromYawPitchRoll(
             look, distance, yaw, pitch, roll, 2)
+
         fov = 20. + self._cameraRandom * np.random.uniform(-2, 2)
         aspect = self._width / self._height
         near = 0.01
@@ -116,9 +121,9 @@ class KukaDiverseObjectEnv(Kuka):
             self._numObjects, self._isTest)
         self._objectUids = self._randomly_place_objects(urdfList)
 
-        obs, obj_obs = self._get_observation()
+        obs = self._get_observation()
 
-        return obs, obj_obs
+        return obs
 
     def _low_dim_full_state(self):
         full_state = []
@@ -150,7 +155,7 @@ class KukaDiverseObjectEnv(Kuka):
         # move to up of object
         dis = obj - current_End_EffectorPos + high_offset + obj_offset
 
-        if abs(dis[0])<5e-4 and abs(dis[0]) <5e-4:
+        if abs(dis[0])<5e-3 and abs(dis[1]) <5e-3:
             # 距离物体中心足够近, 垂直向下
             if i==0 or i==6 or i==15:
                 return np.array([0.0, 0.0, -0.2, np.random.randn(), np.random.randn()], dtype=np.float32)
@@ -171,6 +176,7 @@ class KukaDiverseObjectEnv(Kuka):
             atomic_a = self._close_to_obj_atomic_action(i)
             self._atomic_action(atomic_a, repeat_action=300)
             img.append(self._get_observation())
+            r=self._reward()
         return [img[0], img[6], img[15], img[24]]
 
     def _Current_End_EffectorPos(self):
@@ -260,8 +266,13 @@ class KukaDiverseObjectEnv(Kuka):
 
         goal_pose = np.clip( current_End_EffectorPos + action[:3], a_min=np.array([0.2958, -0.4499, 0.0848]),
                                                                     a_max=np.array([0.70640, 0.3872 , 0.56562]) )
-        out_of_range = np.sum( goal_pose != current_End_EffectorPos + action[:3] )
+        out_of_range = np.sum( (goal_pose != current_End_EffectorPos + action[:3])[:2] )
         self.out_of_range = True if out_of_range else False
+
+        # if out_of_range:
+        #     print("goal_pose:\t", goal_pose )
+        #     print("cur_pose:\t", current_End_EffectorPos + action[:3])
+        #     print("action:\t", action[:3])
 
         self.goal_rotation_angle += action[-2]  # angel
 
@@ -317,19 +328,19 @@ class KukaDiverseObjectEnv(Kuka):
                                    renderer=p.ER_BULLET_HARDWARE_OPENGL
                                    )
         rgb = np.reshape(img_arr[2], (self._height, self._width, 4))[:, :, :3]
-        segmentation = img_arr[4]
+        # segmentation = img_arr[4]
+        #
+        # x, y = np.where(segmentation == 4) # 物体的掩码是4号
+        #
+        # # 手把物体挡住，找不到4号掩码，会返回空 x,y. 这时候就用上一次的 x,y
+        # if x != np.array([]) and y != np.array([]):
+        #     self.x, self.y = int(np.mean(x)), int(np.mean(y))
+        #
+        # # 大小不够 就resize图像。
+        # imgs = Image.fromarray(copy(rgb[self.x-16:self.x+16, self.y-16:self.y+16, :]))
+        # imgs = imgs.resize( size=(32,32) )
 
-        x, y = np.where(segmentation == 4) # 物体的掩码是4号
-
-        # 手把物体挡住，找不到4号掩码，会返回空 x,y. 这时候就用上一次的 x,y
-        if x != np.array([]) and y != np.array([]):
-            self.x, self.y = int(np.mean(x)), int(np.mean(y))
-
-        # 大小不够 就resize图像。
-        imgs = Image.fromarray(copy(rgb[self.x-16:self.x+16, self.y-16:self.y+16, :]))
-        imgs = imgs.resize( size=(32,32) )
-
-        return rgb, np.array(imgs)
+        return rgb
 
     def step_skill(self, skill_num):
 
@@ -357,15 +368,16 @@ class KukaDiverseObjectEnv(Kuka):
         self._env_step += 1
         self._atomic_action( action )
 
-        obs, obj_obs = self._get_observation()
+        obs= self._get_observation()
 
-        reward = self._reward( obs, obj_obs, _step )
-        done = self._termination()
+        reward = self._reward( _step )
+
+        done = self._termination() or (reward==-1)
         debug = {
             'is_success': self._success
         }
 
-        return (obs, obj_obs), reward, done, debug
+        return obs, reward, done, debug
 
     def collect_img(self, grasp=False):
         self._env_step += 1
@@ -382,45 +394,49 @@ class KukaDiverseObjectEnv(Kuka):
     def _up_layer_reward(self):
         return 0
 
-    def _reward(self,  obs, obj_obs, _step=0):
-        # 如果机器人碰到框子。 直接惩罚 -0.2
+    def _reward(self, _step=0):
+        # 如果机器人碰到框子。 直接惩罚
         if len(p.getContactPoints(bodyA=self._kuka.trayUid,
-                                  bodyB=self._kuka.kukaUid)) != 0: return -0.2
+                                  bodyB=self._kuka.kukaUid)) != 0: return -1
         # 出界 有惩罚
-        if self.out_of_range: return -0.2
+        if self.out_of_range:
+            return -1
 
-        _r_ =self._close_to_obj( obs)
+        fs = self._low_dim_full_state()
+        # 随便选一个物体
+        current_End_EffectorPos = np.array( p.getLinkState(self._kuka.kukaUid,
+                                                           self._kuka.kukaEndEffectorIndex)[0] )
+        obj = fs[:3]
+        obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)# 物体的坐标和真实稍稍错位一点， 一点点调出来的。
 
-        if _r_ == 3:
-            self._success = self._can_grasp_or_not(obj_obs)
-            _r_ += int(self._success)
+        gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
+        dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
+        dis = np.sqrt(np.sum(dis**2))
 
-        # if _r_ == 0:
-        #     img_path = 'result/_'+ str(_step) +'_0.png'
-        #     im = Image.fromarray(obs)
-        #     im.save(img_path)
-        # elif _r_==1:
-        #     img_path = 'result/_'+ str(_step) +'_1.png'
-        #     im = Image.fromarray(obs)
-        #     im.save(img_path)
-        # elif _r_==2:
-        #     img_path = 'result/_'+ str(_step) +'_2.png'
-        #     im = Image.fromarray(obs)
-        #     im.save(img_path)
-        # elif _r_==3:
-        #     img_path = 'result/_'+ str(_step) +'_3.png'
-        #     im = Image.fromarray(obs)
-        #     im.save(img_path)
-        # if self._success:
-        #     Image.fromarray(obs).save('result/_'+ str(_step) +'_4_0.png')
-        #     Image.fromarray(obj_obs).save('result/_' + str(_step) + '_4_1.png')
+        # attach obj
+        if sum( [len(p.getContactPoints(bodyA=uid, bodyB=self._kuka.kukaUid)) != 0 for uid in self._objectUids]):
+            self._success = True
+            return 7
 
-        r = _r_ - self._before
-        self._before = _r_
-        return r
+        if dis>0.57: r = 0
+        elif 0.37< dis <=0.57: r = 1
+        elif 0.27< dis <=0.37: r = 2
+        elif 0.18< dis <=0.27: r = 3
+        elif 0.14< dis <=0.18: r = 4
+        elif 0.09 < dis <= 0.14: r = 5
+        elif 0.05 < dis <= 0.09: r = 6
+        else:
+            r = 7
+            self._success = True
+
+# print("rank: {}".format(r))
+
+        reward = r-self._before
+        self._before = r
+        return reward
 
     def _termination(self):
-        return (self._env_step >= self._maxSteps) or self._success
+        return (self._env_step >= self._maxSteps) or self._success or self.out_of_range
 
     def _get_random_object(self, num_objects, test):
         """Randomly choose an object urdf from the random_urdfs directory.

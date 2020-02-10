@@ -33,33 +33,30 @@ def clip_but_pass_gradient(x, l=-1., u=1.):
     clip_low = tf.cast(x < l, tf.float32)
     return x + tf.stop_gradient((u - x)*clip_up + (l - x)*clip_low)
 
-def cnn_l(x):
-    x = x/255.0
-    net = tf.layers.conv2d(x, filters=32, kernel_size=3, activation=tf.nn.relu,
-                           strides=2, padding='same')
-    net = tf.layers.conv2d(net, filters=32, kernel_size=3, activation=tf.nn.relu,
-                           strides=2, padding='same')
-    net = tf.layers.conv2d(net, filters=64, kernel_size=3, activation=tf.nn.relu,
-                           strides=2, padding='same')
-    net = tf.layers.conv2d(net, filters=64, kernel_size=3, activation=tf.nn.relu,
-                           strides=2, padding='same')
-    return tf.layers.flatten(net)
-
-def cnn_b(x):
+def _cnn(x):
     x = x / 255.0
-    net = tf.layers.conv2d(x, filters=16, kernel_size=3, activation=tf.nn.relu,
-                               strides=2, padding='valid', name='conv2_1')
+    net = tf.layers.conv2d(x, filters=64, kernel_size=3, activation=tf.nn.relu,
+                           strides=2, padding='valid', name='conv2_1')
+
     net = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
-    net = tf.layers.conv2d(net, filters=32, kernel_size=4, activation=tf.nn.relu,
-                               strides=1, padding='valid', name='conv2_2')
+
+    net = tf.layers.conv2d(net, filters=128, kernel_size=4, activation=tf.nn.relu,
+                           strides=1, padding='valid', name='conv2_2')
+
     net = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
 
     net = tf.layers.conv2d(net, filters=64, kernel_size=3, name='conv2_3', activation=tf.nn.relu,
-                               strides=2, padding='valid')
+                           strides=2, padding='valid')
+
     net_max = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
 
-    net = tf.layers.conv2d(net_max, filters=32, kernel_size=2, name='conv2_4', activation=tf.nn.relu,
-                               strides=2, padding='valid')
+    net = tf.layers.conv2d(net_max, filters=96, kernel_size=2, name='conv2_4', activation=tf.nn.relu,
+                           strides=2, padding='valid')
+
+    net = tf.layers.flatten(net, name='cnn_flatten')
+
+    # 合起来
+    net = tf.concat([net, tf.layers.flatten(net_max)], axis=1)
     return tf.layers.flatten(net)
 
 """
@@ -102,10 +99,10 @@ def make_Trun_Mix_Gauss_policy(x, a, hidden_sizes, activation, output_activation
     return tfd.MixtureSameFamily(tfd.Categorical(probs=weights_w), tfd.TruncatedNormal(loc, scale, low, high),
                                  validate_args=True, allow_nan_stats=False)
 
-def make_Truncate_Gauss_policy(x_b, x_l, a, hidden_sizes, activation, output_activation, action_sp):
+def make_Truncate_Gauss_policy(x, a, hidden_sizes, activation, output_activation, action_sp):
     act_dim = a.shape.as_list()[-1]
 
-    net = mlp( tf.concat([cnn_b(x_b), cnn_l(x_l)], axis=-1), list(hidden_sizes), activation, activation)
+    net = mlp(_cnn(x), list(hidden_sizes), activation, activation)
 
     net_mu = tf.layers.dense(net, act_dim, activation=tf.tanh)
     # scale
@@ -127,10 +124,10 @@ def mlp_gaussian_policy(x, a, hidden_sizes, activation, output_activation):
     """
     Because algorithm maximizes trade-off of reward and entropy,
     entropy must be unique to state---and therefore log_stds need
-    to be a neural network output instead of a shared-across-states
+    to be a_ neural network output instead of a_ shared-across-states
     learnable parameter vector. But for deep Relu and other nets,
     simply sticking an activationless dense layer at the end would
-    be quite bad---at the beginning of training, a randomly initialized
+    be quite bad---at the beginning of training, a_ randomly initialized
     net could produce extremely large values for the log_stds, which
     would result in some actions being either entirely deterministic
     or too random to come back to earth. Either of these introduces
@@ -141,7 +138,7 @@ def mlp_gaussian_policy(x, a, hidden_sizes, activation, output_activation):
     SAC---they used tf.clip_by_value instead of squashing and rescaling.
     I prefer this approach because it allows gradient propagation
     through log_std where clipping wouldn't, but I don't know if
-    it makes much of a difference.
+    it makes much of a_ difference.
     """
     log_std = tf.layers.dense(net, act_dim, activation=tf.tanh)
     log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
@@ -175,28 +172,28 @@ def apply_squashing_func(mu, pi, logp_pi):
 """
 Actor-Critics
 """
-def actor_critic(x_b, x_l, a, activation=tf.nn.relu,
+def actor_critic(x, a, activation=tf.nn.relu,
                  output_activation=None, action_space=None, hidden_size=(32, 32)):
     # policy
     with tf.variable_scope('pi'):
-        dist, sample_dist, mean, std = make_Truncate_Gauss_policy(x_b, x_l, a, hidden_size, activation, output_activation, action_space)
+        dist, sample_dist, mean, std = make_Truncate_Gauss_policy(x, a, hidden_size, activation, output_activation, action_space)
         pi = tf.clip_by_value( dist.sample(), action_space.low[0], action_space.high[0])
 
     # with tf.variable_scope('oldpi'):
-    #     old_dist, old_mean = make_Truncate_Gauss_policy(x, a, hidden_size, activation, output_activation, action_space)
+    #     old_dist, old_mean = make_Truncate_Gauss_policy(x, a_, hidden_size, activation, output_activation, action_space)
 
     # vfs
-    vf_mlp = lambda x_b, x_l ,a : tf.squeeze(mlp(tf.concat([cnn_b(x_b), cnn_l(x_l), a], axis=-1),
-                                                 list(hidden_size) + [1], activation, None), axis=1)
+    vf_mlp = lambda x_, a_ : tf.squeeze(mlp(tf.concat([_cnn(x_), a_], axis=-1),
+                                            list(hidden_size) + [1], activation, None), axis=1)
     with tf.variable_scope('q1'):
-        q1 = vf_mlp(x_b, x_l,a)
+        q1 = vf_mlp(x, a)
     with tf.variable_scope('q1', reuse=True):
-        q1_pi = vf_mlp( x_b, x_l, pi )
+        q1_pi = vf_mlp(x, pi)
     with tf.variable_scope('q2'):
-        q2 = vf_mlp( x_b, x_l,a )
+        q2 = vf_mlp(x, a)
     with tf.variable_scope('q2', reuse=True):
-        q2_pi = vf_mlp( x_b, x_l, pi )
+        q2_pi = vf_mlp(x, pi)
     with tf.variable_scope('v'):
-        v = tf.squeeze(mlp(tf.concat([cnn_b(x_b), cnn_l(x_l)], axis=1),
+        v = tf.squeeze(mlp( _cnn(x),
                            list(hidden_size) + [1], activation, None), axis=1)
     return dist, sample_dist, mean, pi, q1, q2, q1_pi, q2_pi, v, std

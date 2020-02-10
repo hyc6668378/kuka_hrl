@@ -1,9 +1,7 @@
 #coding=utf-8
-import os
 import tensorflow as tf
-
-from tensorflow.python.util import deprecation
-deprecation._PRINT_DEPRECATION_WARNINGS = False
+import os
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # see issue #152
 
 import numpy as np
 from alg.toolkit import read_and_decode, keras_model_to_frozen_graph
@@ -46,7 +44,10 @@ if __name__ == '__main__':
             tf.keras.layers.MaxPool2D(pool_size=2),
 
             # 2.
-            tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=1, padding='same',
+            tf.keras.layers.Conv2D(filters=32, kernel_size=30, strides=1, padding='same',
+                                   activation='relu'),
+
+            tf.keras.layers.Conv2D(filters=320, kernel_size=30, strides=1, padding='same',
                                    activation='relu'),
             tf.keras.layers.MaxPool2D(pool_size=2),
 
@@ -83,9 +84,8 @@ if __name__ == '__main__':
             if test_history[1] > args.test_acc_limit:
                 print('\nTrain over with Epoch: {}   Test acc: {}\n'.format(step, test_history[1]))
                 break
-
-    model.save('model/'+args.recoder+'.h5')
-    keras_model_to_frozen_graph(model_h5_name='model/'+args.recoder+'.h5',
-                                model_pd_name=args.recoder+'.pd')
+    # model.save('model/'+args.recoder+'.h5')
+    # keras_model_to_frozen_graph(model_h5_name='model/'+args.recoder+'.h5',
+    #                             model_pd_name=args.recoder+'.pd')
     print('\n\n-------------------------------------------')
     print('在 {} epochs之后, Test acc: {}.\n模型固化到： "{}"\n\n'.format(step,  test_history[1], 'model/'+args.recoder+'.pd'))

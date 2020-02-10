@@ -4,7 +4,6 @@ import alg.core as core
 from alg.core import get_vars
 from env.KukaGymEnv import KukaDiverseObjectEnv
 from tqdm import tqdm
-import os
 from PIL import Image
 
 import matplotlib.pyplot as plt
@@ -12,8 +11,12 @@ import seaborn as sns
 sns.set(style="darkgrid", font_scale=1.2)
 import argparse
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import tensorflow as tf
-config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
+config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True),
+                      log_device_placement=True)
 
 def common_arg_parser():
     parser = argparse.ArgumentParser()
@@ -30,11 +33,8 @@ class ReplayBuffer:
     """
 
     def __init__(self, act_dim, size):
-        self.obs1_b_buf = np.zeros([size, 128, 128, 3], dtype=np.float32)
-        self.obs1_l_buf = np.zeros([size, 32, 32, 3], dtype=np.float32)
-
-        self.obs2_b_buf = np.zeros([size, 128, 128, 3], dtype=np.float32)
-        self.obs2_l_buf = np.zeros([size, 32, 32, 3], dtype=np.float32)
+        self.obs1_buf = np.zeros([size, 128, 128, 3], dtype=np.float32)
+        self.obs2_buf = np.zeros([size, 128, 128, 3], dtype=np.float32)
 
         self.acts_buf = np.zeros([size, act_dim], dtype=np.float32)
         self.rews_buf = np.zeros(size, dtype=np.float32)
@@ -42,11 +42,9 @@ class ReplayBuffer:
         self.ptr, self.size, self.max_size = 0, 0, size
 
     def store(self, obs, act, rew, next_obs, done):
-        self.obs1_b_buf[self.ptr] = obs[0]
-        self.obs1_l_buf[self.ptr] = obs[1]
+        self.obs1_buf[self.ptr] = obs[0]
 
-        self.obs2_b_buf[self.ptr] = next_obs[0]
-        self.obs2_l_buf[self.ptr] = next_obs[1]
+        self.obs2_buf[self.ptr] = next_obs[0]
         self.acts_buf[self.ptr] = act
         self.rews_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
@@ -55,10 +53,8 @@ class ReplayBuffer:
 
     def sample_batch(self, batch_size=32):
         idxs = np.random.randint(0, self.size, size=batch_size)
-        return dict(obs1_b=self.obs1_b_buf[idxs],
-                    obs1_l=self.obs1_l_buf[idxs],
-                    obs2_b=self.obs2_b_buf[idxs],
-                    obs2_l=self.obs2_l_buf[idxs],
+        return dict(obs1=self.obs1_buf[idxs],
+                    obs2=self.obs2_buf[idxs],
                     acts=self.acts_buf[idxs],
                     rews=self.rews_buf[idxs],
                     done=self.done_buf[idxs])
@@ -103,7 +99,7 @@ class sac_ES:
         # Build computer graph
         self.graph = tf.Graph()
 
-        with self.graph.as_default():
+        with tf.device('/gpu:0'), self.graph.as_default():
             self.sess = tf.Session(config=config, graph=self.graph)
 
             self.__make_model()
@@ -119,32 +115,27 @@ class sac_ES:
             self.sess.run(self.V_target_init)
 
             _ = os.system("clear")
-            # if input('\n从 {} 加载模型 ? '.format(experiment_name))=='yes':
-            #     self.load()
             Count_Variables()
-
             print('Trainable_variables:')
             for v in tf.compat.v1.trainable_variables():
                 print('{}\t  {}'.format(v.name, str(v.shape)))
 
     def __make_model(self):
-        self.x_b_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x_b_ph')
-        self.x_l_ph = tf.placeholder(tf.float32, [None, 32, 32, 3], name='x_l_ph')
+        self.x1_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x1_ph')
 
-        self.x2_b_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x2_b_ph')
-        self.x2_l_ph = tf.placeholder(tf.float32, [None, 32, 32, 3], name='x2_l_ph')
+        self.x2_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x2_ph')
 
         self.a_ph, self.r_ph, self.d_ph, self.q_ij_ph = core.placeholders(self.act_dim, None, None, self.ac_per_state)
 
         with tf.variable_scope('main'):
             self.dist, self.sample_dist, self.mean, self.pi, self.q1, self.q2, self.q1_pi, self.q2_pi, self.v, self.std = core.actor_critic(
-                self.x_b_ph, self.x_l_ph , self.a_ph, action_space=self.env.action_space, hidden_size=(64, 32))
+                self.x1_ph, self.a_ph, action_space=self.env.action_space, hidden_size=(64, 32))
 
-        vf_mlp = lambda x_b, x_l, : tf.squeeze( core.mlp(tf.concat([core.cnn_b(x_b), core.cnn_l(x_l)], axis=1),
+        vf_mlp = lambda x_: tf.squeeze( core.mlp( core._cnn(x_),
                                                          [64, 32, 1], tf.nn.relu, None), axis=1)
 
         with tf.variable_scope('target'):
-            self.v_target = vf_mlp( self.x2_b_ph, self.x2_l_ph)
+            self.v_target = vf_mlp(self.x2_ph)
 
         # Policy Evaluate
         with tf.variable_scope('Policy_Evaluate'):
@@ -229,18 +220,16 @@ class sac_ES:
 
     def _choose_action(self, o, deterministic=False):
         act_op = self.mean if deterministic else self.pi
-        return self.sess.run( act_op, feed_dict={self.x_b_ph: o[0][np.newaxis, ],
-                                                 self.x_l_ph: o[1][np.newaxis, ]})[0]
+        return self.sess.run(act_op, feed_dict={self.x1_ph: o[np.newaxis,]})[0]
 
     def learn(self):
         batch = self.replay_buffer.sample_batch(self.batch_size)
 
-        a_flatten_opt = self.a_flatten_s_dist if self.entropy_too_low else self.a_flatten_dist
+        a_flatten_opt = self.a_flatten_s_dist #if self.entropy_too_low else self.a_flatten_dist
+
         opt_step_1 = [self.train_value_op, a_flatten_opt, self.c_summary]
-        feed_step_1 = { self.x_b_ph: batch['obs1_b'],
-                        self.x_l_ph: batch['obs1_l'],
-                        self.x2_b_ph: batch['obs2_b'],
-                        self.x2_l_ph: batch['obs2_l'],
+        feed_step_1 = { self.x1_ph: batch['obs1'],
+                        self.x2_ph: batch['obs2'],
                         self.a_ph: batch['acts'],
                         self.r_ph: batch['rews'],
                         self.d_ph: batch['done']
@@ -249,10 +238,8 @@ class sac_ES:
         self.writer.add_summary(c_s)
 
         feed_step_2 = {self.a_ph: np.squeeze(a_Flatten),
-                       self.x_b_ph: np.tile( batch['obs1_b'], [self.ac_per_state, 1, 1 ,1]),
-                       self.x_l_ph: np.tile(batch['obs1_l'], [self.ac_per_state, 1, 1, 1]),
-                       self.x2_b_ph: np.tile(batch['obs2_b'], [self.ac_per_state, 1, 1, 1]),
-                       self.x2_l_ph: np.tile( batch['obs2_l'], [self.ac_per_state, 1, 1, 1])}
+                       self.x1_ph: np.tile(batch['obs1'], [self.ac_per_state, 1, 1 , 1]),
+                       self.x2_ph: np.tile(batch['obs2'], [self.ac_per_state, 1, 1, 1])}
         opt_step_2 = [self.entropy, self.train_pi_op, self.a_summary]
 
         # update policy by max_likelihood
@@ -268,7 +255,7 @@ class sac_ES:
     def test_agent(self, deterministic=False, n=1):
         ep_r = []
         ep_l = []
-        plt.figure(figsize=(7, 4))
+        plt.figure(figsize=(9, 5))
         for j in range( n ):
             print('------------------Epoch: %d-------------------'%j)
 
@@ -298,7 +285,6 @@ class sac_ES:
         o, r, d, ep_ret, ep_len = self.env.reset(), 0, False, 0, 0
 
         deterministic = False
-        # logger
         log_t = []
         log_episode_ret = []
 
@@ -316,10 +302,8 @@ class sac_ES:
             ep_len += 1
 
             if info['is_success']:
-                im = Image.fromarray(o2[0])
-                im.save(
-                    'result/success_obs/' + str(self._success_obs_item)+'.png'
-                )
+                im = Image.fromarray(o2)
+                im.save( 'result/success_obs/' + str(self._success_obs_item)+'.png' )
                 self._success_obs_item +=1
 
             d = False if ep_len == self.max_ep_len else d
@@ -330,16 +314,17 @@ class sac_ES:
 
             if d or (ep_len == self.max_ep_len):
 
-                if (t+1) >= 500: [self.learn() for _ in range(ep_len)]
+                if (t+1) >= 500: [self.learn() for _ in range(ep_len)] # todo::
 
                 ep_s = self.sess.run(self.test_summary, {self.ep_ret_ph: ep_ret,
                                                            self.ep_len_ph: ep_len})
                 self.writer.add_summary(ep_s, global_step=t)
                 log_episode_ret.append(ep_ret)
                 log_t.append(t)
+                print("episode return: ", ep_ret)
                 o, r, d, ep_ret, ep_len = self.env.reset(), 0, False, 0, 0
 
-            if (t+1)%300 ==0:
+            if (t+1)%100 ==0:
                 self.Save()
 
         np.save('result/'+self.experiment_name+'_reward.npy', (log_t, log_episode_ret), allow_pickle=True)
@@ -354,8 +339,8 @@ def Count_Variables():
 def R_plot(r_plot, viz, win):
     plt.cla()
     plt.plot(r_plot, color='r', label='Rank')
-    plt.ylim(0,5)
-    plt.xlim(0,25)
+    plt.ylim(0,8)
+    # plt.xlim(0,25)
     plt.xlabel('Step')
     plt.ylabel('Rank')
     plt.title('Rank Trance')
@@ -364,22 +349,23 @@ def R_plot(r_plot, viz, win):
 
 if __name__ == '__main__':
     args = common_arg_parser()
-    # if input('删除 '+"logs/"+args['experiment_name']+' ? ')!='no':
     import shutil
     try:
         shutil.rmtree("logs/"+args['experiment_name'])
     except:
         pass
 
+
+    MAX_STEP=200
     env_fn = lambda : KukaDiverseObjectEnv(renders=False,
-                         maxSteps=15,
+                         maxSteps=MAX_STEP,
                          blockRandom=0.3,
                          actionRepeat=200,
                          numObjects=1, dv=1.0,
                          isTest=False)
 
-    model = sac_ES(env_fn, steps_per_epoch=15, epochs=700, gamma=0.9,
+    model = sac_ES(env_fn, steps_per_epoch=MAX_STEP, epochs=700, gamma=0.9,
                    polyak=0.995, memory_size=20000, lr=3e-4, alpha=0.2,
-                   batch_size=64, start_steps=300, max_ep_len=500, **args)
+                   batch_size=32, start_steps=300, max_ep_len=500, **args)
 
     model.rollout()

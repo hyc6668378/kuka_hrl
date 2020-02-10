@@ -1,5 +1,4 @@
 #coding=utf-8
-
 import os
 from os import listdir
 from os.path import join
@@ -74,9 +73,6 @@ def create_record(record_path="close_to_obj.tfrecords", name=0):
     for img_name in tqdm(os.listdir(class_path)):
         img_path = class_path + img_name
         img = Image.open(img_path)
-        ###图片灰度化######################################################################
-        # img=img.convert("L")
-        ##############################################################################################
         img_raw = img.tobytes()  # 将图片转化为原生bytes
         example = tf.train.Example(
             features=tf.train.Features(feature={
@@ -85,8 +81,6 @@ def create_record(record_path="close_to_obj.tfrecords", name=0):
             }))
         writer.write(example.SerializeToString())
         num_tf_example += 1
-        # if num_tf_example % 100 == 0:
-        #     print("Create %d TF_Example" % num_tf_example)
     writer.close()
     print("\n---------------------------------------------------")
     print("{} tf_examples has been created successfully, which are saved in {}".format(num_tf_example, record_path))

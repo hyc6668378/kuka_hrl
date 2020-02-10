@@ -11,8 +11,8 @@ from builtins import input
 
 import tensorflow as tf
 import numpy as np
-config = tf.ConfigProto()
-config.gpu_options.allow_growth = True
+
+config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
 
 #import helpers
 from alg.siamese_net import siamese

@@ -8,11 +8,13 @@ import os
 from PIL import Image
 from tqdm import tqdm
 
+
 def common_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("-t", "--train", action="store_true", help="收集训练数据还是测试数据")
     parser.add_argument('--worker_step',    type=int, default=2019, help="每个worker循环次数.")
     return  parser
+
 
 manager = Manager()
 class_itm_dict = manager.dict()
