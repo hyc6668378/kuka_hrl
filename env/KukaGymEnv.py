@@ -1,4 +1,5 @@
 # coding=utf-8
+from stable_baselines.common.policies import CnnPolicy
 
 from env.kuka import Kuka
 import os
@@ -13,8 +14,8 @@ import gym
 from gym.utils import seeding
 import random
 # from alg.embedding_map import _close_to_obj, whether_can_grasp_or_not
-from PIL import Image
-from copy import copy
+# from PIL import Image
+# from copy import copy
 
 
 class KukaDiverseObjectEnv(Kuka, gym.Env):
@@ -92,14 +93,15 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self._proj_matrix = p.computeProjectionMatrixFOV(
             fov, aspect, near, far)
         self.goal_rotation_angle = 0
-        self._attempted_grasp = False
         self._env_step = 0
         self.terminated = 0
         self.finger_angle = 0.3
         self._success = False
-        self._before = 0
+        self._rank_before = 0
         self.x, self.y = 0, 0
         self.out_of_range = False
+        self._collision_box = False
+        self._grasp_ok = False
 
         if self._isTest: _ = os.system("rm result/_*")
 
@@ -107,8 +109,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         p.setPhysicsEngineParameter(numSolverIterations=300)
         p.setTimeStep(self._timeStep)
 
-        p.loadURDF(os.path.join(self._urdfRoot, "plane.urdf"), [0, 0, -1])
-        p.loadURDF(os.path.join(self._urdfRoot, "table/table.urdf"),
+        self._planeUid = p.loadURDF(os.path.join(self._urdfRoot, "plane.urdf"), [0, 0, -1])
+        self._tableUid = p.loadURDF(os.path.join(self._urdfRoot, "table/table.urdf"),
            [0.5000000, 0.00000, -.820000], p.getQuaternionFromEuler( np.radians([0,0,90.])))
 
         p.setGravity(0, 0, -10)
@@ -122,8 +124,21 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self._objectUids = self._randomly_place_objects(urdfList)
 
         obs = self._get_observation()
-
         return obs
+
+    def _domain_random(self):
+        p.changeVisualShape(self._objectUids[0], -1,
+                            rgbaColor=[random.random(), random.random(), random.random(), 1.])
+        p.changeVisualShape(self._planeUid, -1,
+                            rgbaColor=[random.random(), random.random(), random.random(), 1.])
+        p.changeVisualShape(self._tableUid, -1,
+                            rgbaColor=[random.random(), random.random(), random.random(), 1.])
+        for jointIndex in range(self._kuka.numJoints):
+            p.changeVisualShape(self._kuka.kukaUid, linkIndex=jointIndex,
+                            rgbaColor=[random.random(), random.random(), random.random(), 1.])
+
+        p.changeVisualShape(self._kuka.trayUid, -1,
+                            rgbaColor=[random.random(), random.random(), random.random(), 1.])
 
     def _low_dim_full_state(self):
         full_state = []
@@ -179,6 +194,11 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             r=self._reward()
         return [img[0], img[6], img[15], img[24]]
 
+    def _Current_End_Effector_State(self):
+        _pos = np.array( p.getLinkState(self._kuka.kukaUid, self._kuka.kukaEndEffectorIndex) )[0]
+        _end_effector = np.append(_pos, [self.goal_rotation_angle, self.finger_angle])
+        return _end_effector
+
     def _Current_End_EffectorPos(self):
         state = p.getLinkState(self._kuka.kukaUid, self._kuka.kukaEndEffectorIndex)
         current_End_EffectorPos = np.array(state[0])
@@ -202,8 +222,18 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         return self._get_observation()
 
-    def _grasp(self):
+    def _grasp_pick_up(self):
         current_End_EffectorPos = self._Current_End_EffectorPos()
+
+        before = self._obj_high()
+
+        # # open
+        # for _ in range(500):
+        #     self._kuka.applyAction( current_End_EffectorPos, self.goal_rotation_angle, fingerAngle=self.finger_angle)
+        #     p.stepSimulation()
+        #     self.finger_angle += 0.15 / 100.
+        #     self.finger_angle = np.clip(self.finger_angle, 0., 0.35)
+
         # grasp
         for _ in range(500):
             self._kuka.applyAction( current_End_EffectorPos, self.goal_rotation_angle, fingerAngle=self.finger_angle)
@@ -213,7 +243,20 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             self.finger_angle -= 0.3 / 100.
             self.finger_angle = np.clip(self.finger_angle, 0., 0.35)
 
-        return self._get_observation()
+        # pick up
+        current_End_EffectorPos = self._Current_End_EffectorPos()
+        pick_up_iter = 400
+        for _ in range(pick_up_iter):
+            current_End_EffectorPos[2] = current_End_EffectorPos[2] + 0.001
+            current_End_EffectorPos = np.clip(current_End_EffectorPos, a_min=np.array([0.2958, -0.4499, 0.0848]),
+                                              a_max=np.array([0.70640, 0.3872, 0.56562]))
+            self._kuka.applyAction(current_End_EffectorPos, da=self.goal_rotation_angle, fingerAngle=self.finger_angle)
+            p.stepSimulation()
+            self.finger_angle -= 0.3 / 100.
+            self.finger_angle = np.clip(self.finger_angle, 0., 0.35)
+
+        grasp_correct = True if (self._obj_high() - before) > 0.03 else False
+        return grasp_correct
 
     def _release(self):
         current_End_EffectorPos = self._Current_End_EffectorPos() + np.array([0., 0., 0.02]) # z轴高2cm 抵消重力。
@@ -264,15 +307,16 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         state = p.getLinkState(self._kuka.kukaUid, self._kuka.kukaEndEffectorIndex)
         current_End_EffectorPos = np.array( state[0] )
 
-        goal_pose = np.clip( current_End_EffectorPos + action[:3], a_min=np.array([0.2958, -0.4499, 0.0848]),
-                                                                    a_max=np.array([0.70640, 0.3872 , 0.56562]) )
+        goal_pose = np.clip( current_End_EffectorPos + action[:3], a_min=np.array([0.2758, -0.4499, 0.0848]),
+                                                                    a_max=np.array([0.79640, 0.4972 , 0.56562]) )
         out_of_range = np.sum( (goal_pose != current_End_EffectorPos + action[:3])[:2] )
         self.out_of_range = True if out_of_range else False
 
-        # if out_of_range:
-        #     print("goal_pose:\t", goal_pose )
-        #     print("cur_pose:\t", current_End_EffectorPos + action[:3])
-        #     print("action:\t", action[:3])
+        if self._isTest:
+            if out_of_range:
+                print("goal_pose:\t", goal_pose )
+                print("cur_pose:\t", current_End_EffectorPos + action[:3])
+                print("action:\t", action[:3])
 
         self.goal_rotation_angle += action[-2]  # angel
 
@@ -301,7 +345,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         objectUids = []
         for urdf_name in urdfList:
             xpos = 0.45 + self._blockRandom * random.random()
-            ypos = 0.2 + self._blockRandom * (random.random() - .5)
+            ypos = 0.26 + self._blockRandom * (random.random() - .5)
             angle = np.pi / 2 + self._blockRandom * np.pi * random.random()
             orn = p.getQuaternionFromEuler([0, 0, angle])
             urdf_path = os.path.join(self._urdfRoot, urdf_name)
@@ -340,7 +384,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         # imgs = Image.fromarray(copy(rgb[self.x-16:self.x+16, self.y-16:self.y+16, :]))
         # imgs = imgs.resize( size=(32,32) )
 
-        return rgb
+        End_Effector_state = self._Current_End_Effector_State()
+        return [rgb, End_Effector_state]
 
     def step_skill(self, skill_num):
 
@@ -355,28 +400,29 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         else:
             _ =self._release()
 
-        obs, obj_obs = self._get_observation()
+        obs= self._get_observation()
         done = self._termination()
         reward = self._up_layer_reward()
         debug = {
             'is_success': self._success
         }
 
-        return (obs, obj_obs), reward, done, debug
+        return obs, reward, done, debug
 
     def step(self, action, _step=0):
         self._env_step += 1
         self._atomic_action( action )
-
+        self._domain_random()
         obs= self._get_observation()
 
         reward = self._reward( _step )
 
-        done = self._termination() or (reward==-1)
+        done = self._termination()
         debug = {
             'is_success': self._success
         }
 
+        if self._success: print("success!")
         return obs, reward, done, debug
 
     def collect_img(self, grasp=False):
@@ -397,44 +443,71 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
     def _reward(self, _step=0):
         # 如果机器人碰到框子。 直接惩罚
         if len(p.getContactPoints(bodyA=self._kuka.trayUid,
-                                  bodyB=self._kuka.kukaUid)) != 0: return -1
-        # 出界 有惩罚
-        if self.out_of_range:
+                                  bodyB=self._kuka.kukaUid)) != 0:
+            self._collision_box = True
+            print("xiangzi")
             return -1
 
-        fs = self._low_dim_full_state()
-        current_End_EffectorPos = np.array( p.getLinkState(self._kuka.kukaUid,
-                                                           self._kuka.kukaEndEffectorIndex)[0] )
-        obj = fs[:3]
-        obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)# 物体的坐标和真实稍稍错位一点， 一点点调出来的。
-        gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
-        dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
-        dis = np.sqrt(np.sum(dis**2))
+        # 出界 有惩罚
+        if self.out_of_range:
+            print("out_of_range")
+            return -1
 
-        # attach obj
-        if sum( [len(p.getContactPoints(bodyA=uid, bodyB=self._kuka.kukaUid)) != 0 for uid in self._objectUids]):
-            r = 7
-            self._success = True
-        else:
-            if dis>0.57: r = 0
-            elif 0.37< dis <=0.57: r = 1
-            elif 0.27< dis <=0.37: r = 2
-            elif 0.18< dis <=0.27: r = 3
-            elif 0.14< dis <=0.18: r = 4
-            elif 0.09 < dis <= 0.14: r = 5
-            elif 0.05 < dis <= 0.09: r = 6
-            else:
-                r = 7
-                self._success = True
+        rank = self._rank()
 
-# print("rank: {}".format(r))
-
-        reward = r-self._before
-        self._before = r
+        reward = rank-self._rank_before
+        self._rank_before = rank
         return reward
 
+    def _rank(self):
+        obj = self._low_dim_full_state()[:3]
+        if self._grasp_ok and self._obj_high()>0:
+            obj = obj[:2] # don't use z
+            box_pos = np.array( p.getBasePositionAndOrientation(self._kuka.trayUid)[0] )[:2]
+            dis_to_box = np.sqrt(np.sum((obj - box_pos)**2))
+
+            if dis_to_box > 0.57: rank = 17
+            elif 0.37 < dis_to_box <= 0.57: rank = 19
+            elif 0.27 < dis_to_box <= 0.37: rank = 21
+            elif 0.18 < dis_to_box <= 0.27: rank = 23
+            elif 0.14 < dis_to_box <= 0.18: rank = 25
+            elif 0.09 < dis_to_box <= 0.14: rank = 27
+            else:
+                self._release()
+                self._success = True
+                rank = 35
+        else:
+            self._grasp_ok = False
+            current_End_EffectorPos = np.array( p.getLinkState(self._kuka.kukaUid,
+                                                               self._kuka.kukaEndEffectorIndex)[0] )
+            obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)# 物体的坐标和真实稍稍错位一点， 一点点调出来的。
+            gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
+            dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
+            dis = np.sqrt(np.sum(dis**2))
+
+            if dis>0.57: rank = 0
+            elif 0.37< dis <=0.57: rank = 1
+            elif 0.27< dis <=0.37: rank = 2
+            elif 0.18< dis <=0.27: rank = 3
+            elif 0.14< dis <=0.18: rank = 4
+            elif 0.09 < dis <= 0.14: rank = 5
+            elif 0.05 < dis <= 0.09: rank = 6
+            else:
+                rank = 7
+
+            if rank == 7:
+                if self._grasp_pick_up():
+                    self._grasp_ok = True
+                    rank = 15
+                    print("grasp_success !")
+                else:
+                    rank = 3
+                    print("grasp_not_success..")
+
+        return rank
+
     def _termination(self):
-        return (self._env_step >= self._maxSteps) or self._success or self.out_of_range
+        return (self._env_step >= self._maxSteps) or self._success or self.out_of_range or self._collision_box
 
     def _get_random_object(self, num_objects, test):
         """Randomly choose an object urdf from the random_urdfs directory.

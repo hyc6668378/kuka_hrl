@@ -330,16 +330,15 @@ class sac_ES:
         np.save('result/'+self.experiment_name+'_reward.npy', (log_t, log_episode_ret), allow_pickle=True)
 
 def Count_Variables():
-
     var_counts = tuple(core.count_vars(scope) for scope in
-                       ['main/pi', 'main/q1', 'main/q2', 'main/v', 'main'])
+                       ['pi', 'v'])
     print(('\nNumber of parameters: \t pi: %d, \t ' +
-           'q1: %d, \t q2: %d, \t v: %d, \t total: %d\n') % var_counts)
+           'v: %d\n') % var_counts)
 
 def R_plot(r_plot, viz, win):
     plt.cla()
     plt.plot(r_plot, color='r', label='Rank')
-    plt.ylim(0,8)
+    plt.ylim(0,15)
     # plt.xlim(0,25)
     plt.xlabel('Step')
     plt.ylabel('Rank')
@@ -356,7 +355,7 @@ if __name__ == '__main__':
         pass
 
 
-    MAX_STEP=200
+    MAX_STEP=150
     env_fn = lambda : KukaDiverseObjectEnv(renders=False,
                          maxSteps=MAX_STEP,
                          blockRandom=0.3,

@@ -179,9 +179,6 @@ def actor_critic(x, a, activation=tf.nn.relu,
         dist, sample_dist, mean, std = make_Truncate_Gauss_policy(x, a, hidden_size, activation, output_activation, action_space)
         pi = tf.clip_by_value( dist.sample(), action_space.low[0], action_space.high[0])
 
-    # with tf.variable_scope('oldpi'):
-    #     old_dist, old_mean = make_Truncate_Gauss_policy(x, a_, hidden_size, activation, output_activation, action_space)
-
     # vfs
     vf_mlp = lambda x_, a_ : tf.squeeze(mlp(tf.concat([_cnn(x_), a_], axis=-1),
                                             list(hidden_size) + [1], activation, None), axis=1)
