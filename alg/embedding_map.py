@@ -101,3 +101,47 @@ class whether_can_grasp_or_not(classifier):
 class _close_to_obj(classifier):
     def __init__(self):
         super(_close_to_obj, self).__init__(shape=(128, 128, 3),model_name='_close_to_obj')
+
+
+class phase_policy:
+    def __init__(self, shape, model_name='None', ):
+        frozen_graph_filename = 'model/' + model_name + '.pd'
+        self.shape = shape
+
+        assert os.path.isfile(frozen_graph_filename), "Can't find {}".format(frozen_graph_filename)
+
+        self._frozen_graph = load_graph(frozen_graph_filename=frozen_graph_filename, graph_name=model_name)
+
+        self.img_placeholder = self._frozen_graph.get_tensor_by_name(self._frozen_graph.get_operations()[0].values()[0].name)
+        self.low_dim_ph = self._frozen_graph.get_tensor_by_name(self._frozen_graph.get_operations()[1].values()[0].name)
+        self.pi = self._frozen_graph.get_tensor_by_name(self._frozen_graph.get_operations()[-1].values()[-1].name)
+
+    def _check_shape(self, imgs):
+        if imgs.shape == self.shape:
+            return imgs
+        else:
+            assert imgs.ndim == 3, '占时不支持 预测一批图像. imgs必须为单张图像。'
+            imgs = Image.fromarray(imgs)
+            imgs = imgs.resize(self.shape[:-1])
+            return np.array(imgs)
+
+    def __call__(self, o, **kwargs):
+
+        imgs = self._check_shape(o[0])
+
+        with tf.compat.v1.Session(graph=self._frozen_graph, config=config) as sess:
+            pi = sess.run(self.pi, feed_dict={
+                self.img_placeholder: imgs[np.newaxis, ],
+                self.low_dim_ph: o[1][np.newaxis, ]
+            })
+        return pi[0]
+
+
+class _phase_2_policy(phase_policy):
+    def __init__(self):
+        super(_phase_2_policy, self).__init__(shape=(128, 128, 3), model_name='phase_2_policy')
+
+
+class _phase_1_policy(phase_policy):
+    def __init__(self):
+        super(_phase_1_policy, self).__init__(shape=(128, 128, 3),model_name='phase_1_policy')

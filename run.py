@@ -1,5 +1,4 @@
 # coding=utf-8
-from env.KukaGymEnv import KukaDiverseObjectEnv
 from alg.ddpg import DDPG
 from alg.OUNoise import OUNoise
 import numpy as np
@@ -108,9 +107,9 @@ def train(agent, env, eval_env, max_epochs, rank, PreTrain_STEPS, turn_beta,
           nb_rollout_steps=100, inter_learn_steps=50, **kwargs):
 
     # OU noise
-    Noise = OUNoise(size=env.a_space.shape[0], mu=0, theta=0.05, sigma=0.25)
+    Noise = OUNoise(size=env.action_space.shape[0], mu=0, theta=0.05, sigma=0.25)
 
-    assert np.all(np.abs(env.a_space.low) == env.a_space.high)
+    assert np.all(np.abs(env.action_space.low) == env.action_space.high)
     print('Process_%d start rollout!'%(rank))
     with agent.sess.as_default(), agent.graph.as_default():
         obs = env.reset()
@@ -129,7 +128,7 @@ def train(agent, env, eval_env, max_epochs, rank, PreTrain_STEPS, turn_beta,
 
                 # Predict next action.
                 action = agent.pi(obs)
-                action = Noise_Action(Noise, action, env.a_space)
+                action = Noise_Action(Noise, action, env.action_space)
                 assert action.shape == env.action_space.shape
 
                 new_obs, reward, done, info = env.step(action)
@@ -144,7 +143,6 @@ def train(agent, env, eval_env, max_epochs, rank, PreTrain_STEPS, turn_beta,
 
                 if done:
                     # Episode done.
-
                     episodes += 1
                     agent.save_episoed_result(episode_cumulate_reward, episode_length, info['is_success'], episodes)
                     episode_cumulate_reward_history.append(episode_cumulate_reward)
@@ -202,24 +200,27 @@ def main(experiment_name, seed, max_epochs, evaluation, isRENDER, max_ep_steps,
     set_process_seeds(seed)
     print('\nrank {}: seed={}'.format(rank, seed))
 
-    env = KukaDiverseObjectEnv(renders=True,
-                               isDiscrete=False,
-                               maxSteps=max_ep_steps,
-                               blockRandom=0.0,
-                               use_segmentation_Mask=False,
-                               actionRepeat=200,
-                               numObjects=1, dv=1.0)
+    from env.KukaGymEnv import KukaDiverseObjectEnv
+
+    env = KukaDiverseObjectEnv(renders=False,
+                                          maxSteps=max_ep_steps,
+                                          blockRandom=0.2,
+                                          actionRepeat=200,
+                                          numObjects=1, dv=1.0,
+                                          isTest=False, proce_num=rank,
+                                          phase = 1 )
+
     kwargs['obs_space'] = env.observation_space
     kwargs['action_space'] = env.action_space
 
     if evaluation and rank == 0:
         eval_env = KukaDiverseObjectEnv(renders=isRENDER,
-                                        isDiscrete=False,
-                                        maxSteps=max_ep_steps,
-                                        blockRandom=0.0,
-                                        use_segmentation_Mask=use_segmentation_Mask,
-                                        actionRepeat=200,
-                                        numObjects=1, dv=1.0)
+                         maxSteps=max_ep_steps,
+                         blockRandom=0.2,
+                         actionRepeat=200,
+                         numObjects=1, dv=1.0,
+                         isTest=False, proce_num=rank,
+                         phase=1)
     else:
         eval_env = None
 

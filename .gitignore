@@ -17,3 +17,4 @@ result/
 train/
 *.pyc
 tf_recoders/
+*.zip

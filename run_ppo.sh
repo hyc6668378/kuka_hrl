@@ -1,5 +1,5 @@
 #!/bin/bash
 python ppo.py \
-   --epochs 1500 \
-   --exp_name ppo_kuka_09_51 \
-   --cpu 4
+   --epochs 3000 \
+   --exp_name two_obs \
+   --cpu 5

@@ -9,6 +9,7 @@ from spinup.utils.mpi_tf import MpiAdamOptimizer, sync_all_params
 from spinup.utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs
 from tqdm import tqdm
 
+import random
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set(style="darkgrid", font_scale=1.2)
@@ -24,6 +25,8 @@ class PPOBuffer:
 
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs_buf_2 = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
+
         self.obs_End_buf = np.zeros(core.combined_shape(size, 5), dtype=np.float32)
 
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
@@ -35,13 +38,15 @@ class PPOBuffer:
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
-    def store(self, obs, obs_End, act, rew, val, logp):
+    def store(self, obs, act, rew, val, logp):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
         assert self.ptr < self.max_size  # buffer has to have room so you can store
-        self.obs_buf[self.ptr] = obs
-        self.obs_End_buf[self.ptr] = obs_End
+        self.obs_buf[self.ptr] = obs[0]
+        self.obs_buf_2[self.ptr] = obs[1]
+        self.obs_End_buf[self.ptr] = obs[2]
+
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.val_buf[self.ptr] = val
@@ -88,7 +93,7 @@ class PPOBuffer:
         # the next two lines implement the advantage normalization trick
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
-        return [self.obs_buf, self.obs_End_buf, self.act_buf, self.adv_buf,
+        return [self.obs_buf, self.obs_buf_2, self.obs_End_buf, self.act_buf, self.adv_buf,
                 self.ret_buf, self.logp_buf]
 
 
@@ -97,10 +102,14 @@ class ppo:
         steps_per_epoch=4000, epochs=50, gamma=0.99, clip_ratio=0.2, pi_lr=3e-4,
         vf_lr=1e-3, train_pi_iters=80, train_v_iters=80, lam=0.97, max_ep_len=1000,
         target_kl=0.01, save_freq=10, exp_name='', test_agent=False, load=False):
+        # seed
         self.seed = seed
         self.seed += 10000 * proc_id()
         tf.set_random_seed(self.seed)
         np.random.seed(self.seed)
+        random.seed(self.seed)
+
+        # Hyper-parameter
         self.env = env_fn()
         self.obs_dim = self.env.observation_space.shape
         self.act_dim = self.env.action_space.shape
@@ -119,7 +128,6 @@ class ppo:
             self.viz = Visdom()
             assert self.viz.check_connection()
             self.win = self.viz.matplot(plt)
-
 
         # Experience buffer
         self.buf = PPOBuffer(self.obs_dim, self.act_dim, self.local_steps_per_epoch, self.gamma, self.lam)
@@ -148,19 +156,28 @@ class ppo:
             self.sess.run(sync_all_params())
 
             self.ep_ret_ph = tf.placeholder(tf.float32, shape=(), name="ep_ret_ph")
+            self.ep_Entropy_ph = tf.placeholder(tf.float32, shape=(), name="Entropy")
+            self.clipfrac_ph = tf.placeholder(tf.float32, shape=(), name="clipfrac")
             self.ep_len_ph = tf.placeholder(tf.float32, shape=(), name="ep_len_ph")
             self.test_summary = tf.compat.v1.summary.merge(
                 [tf.compat.v1.summary.scalar('EP_ret', self.ep_ret_ph, family='test'),
                  tf.compat.v1.summary.scalar('EP_len', self.ep_len_ph, family='test')])
+            self.entropy_summary = tf.compat.v1.summary.merge(
+                [tf.compat.v1.summary.scalar('Entropy', self.ep_Entropy_ph, family='test'),
+                 tf.compat.v1.summary.scalar('clipfrac', self.clipfrac_ph, family='test')])
 
     def __make_model(self):
 
-        self.x_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x_ph')
-        a_ph, adv_ph, ret_ph, logp_old_ph, self.x_low_dim_ph = core.placeholders(self.act_dim, None, None, None, 5)
+        self.o1_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o1_ph')
+        self.o2_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o2_ph')
+        self.o_low_dim_ph = tf.placeholder(tf.float32, [None, 5], name='o_low_dim_ph')
 
-        pi, logp, logp_pi, self.v = core.mlp_actor_critic(self.x_ph, self.x_low_dim_ph, a_ph)
 
-        self.all_phs = [self.x_ph, self.x_low_dim_ph, a_ph, adv_ph, ret_ph, logp_old_ph]
+        a_ph, adv_ph, ret_ph, logp_old_ph = core.placeholders(self.act_dim, None, None, None)
+        pi, logp, logp_pi, self.v = core.mlp_actor_critic(self.o1_ph, self.o2_ph, self.o_low_dim_ph, a_ph,
+                                                          action_space=self.env.action_space)
+
+        self.all_phs = [self.o1_ph, self.o2_ph, self.o_low_dim_ph, a_ph, adv_ph, ret_ph, logp_old_ph]
 
         self.get_action_ops = [pi, self.v, logp_pi]
 
@@ -174,7 +191,7 @@ class ppo:
         self.approx_kl = tf.reduce_mean(logp_old_ph - logp)  # a sample estimate for KL-divergence, easy to compute
         self.approx_ent = tf.reduce_mean(-logp)  # a sample estimate for entropy, also easy to compute
         clipped = tf.logical_or(ratio > (1 + self.clip_ratio), ratio < (1 - self.clip_ratio))
-        clipfrac = tf.reduce_mean(tf.cast(clipped, tf.float32))
+        self.clipfrac = tf.reduce_mean(tf.cast(clipped, tf.float32))
 
         # Optimizers
         self.train_pi = MpiAdamOptimizer(learning_rate=self.pi_lr).minimize(self.pi_loss)
@@ -182,15 +199,16 @@ class ppo:
 
     def update(self):
         inputs = {k: v for k, v in zip(self.all_phs, self.buf.get())}
-        # pi_l_old, v_l_old, ent = self.sess.run([self.pi_loss, self.v_loss, self.approx_ent], feed_dict=inputs)
 
         # Training
         for i in range(self.train_pi_iters):
             _, kl = self.sess.run([self.train_pi, self.approx_kl], feed_dict=inputs)
             kl = mpi_avg(kl)
+
             if kl > 1.5 * self.target_kl:
                 print('process %d: Early stopping at step %d due to reaching max kl.' % (proc_id(), i))
                 break
+
 
         for _ in range(self.train_v_iters):
             self.sess.run(self.train_v, feed_dict=inputs)
@@ -201,15 +219,16 @@ class ppo:
         # Main loop: collect experience in env and update/log each epoch
         for epoch in tqdm(range(self.epochs)):
             for t in range(self.local_steps_per_epoch):
-                a, v_t, logp_t = self.sess.run(self.get_action_ops, feed_dict={self.x_ph: o[0][np.newaxis, ],
-                                                                     self.x_low_dim_ph: o[1][np.newaxis, ]})
+                a, v_t, logp_t = self.sess.run(self.get_action_ops, feed_dict={self.o1_ph: o[0][np.newaxis, ],
+                                                                               self.o2_ph: o[1][np.newaxis, ],
+                                                                               self.o_low_dim_ph: o[2][np.newaxis,]})
 
                 o2, r, d, _ = self.env.step(a[0])
                 ep_ret += r
                 ep_len += 1
 
                 # save and log
-                self.buf.store(o[0], o[1], a, r, v_t, logp_t)
+                self.buf.store(o, a, r, v_t, logp_t)
 
                 # Update obs (critical!)
                 o = o2
@@ -219,8 +238,9 @@ class ppo:
                     if not (terminal):
                         print('process %d: trajectory cut off by epoch at %d steps.' % (proc_id(), ep_len))
                     # if trajectory didn't reach terminal state, bootstrap value target
-                    last_val = 0 if d else self.sess.run(self.v, feed_dict={self.x_ph: o[0][np.newaxis, ],
-                                                                            self.x_low_dim_ph: o[1][np.newaxis, ]})
+                    last_val = 0 if d else self.sess.run(self.v, feed_dict={self.o1_ph: o[0][np.newaxis, ],
+                                                                            self.o2_ph: o[1][np.newaxis,],
+                                                                            self.o_low_dim_ph: o[2][np.newaxis,]})
                     self.buf.finish_path(last_val)
 
                     if proc_id() == 0:
@@ -248,11 +268,11 @@ class ppo:
         print("\nLoad model From the: '{}'\n".format(path) )
         self.saver.restore(self.sess, save_path=path)
 
-
     def _choose_action(self, o):
-        a, v_t, logp_t = self.sess.run(self.get_action_ops, feed_dict={self.x_ph: o[0][np.newaxis,],
-                                                                       self.x_low_dim_ph: o[1][np.newaxis,]})
-        return a[0]
+        a, v_t, logp_t = self.sess.run(self.get_action_ops, feed_dict={self.o1_ph: o[0][np.newaxis,],
+                                                                       self.o2_ph: o[1][np.newaxis,],
+                                                                       self.o_low_dim_ph: o[2][np.newaxis,]})
+        return a[0], v_t
 
     def test_agent(self, n=1):
         ep_r = []
@@ -262,17 +282,20 @@ class ppo:
             print('------------------Epoch: %d-------------------'%j)
 
             o, r, d, ep_ret, ep_len, level_plot = self.env.reset(), 0, False, 0, 0, []
-
+            v_plot = []
             while not(d or (ep_len == self.max_ep_len)):
 
                 # Take deterministic actions at test time
-                a = self._choose_action(o)
+                a,v_t = self._choose_action(o)
+                print('V: {}'.format(v_t[0]))
+                v_plot.append( v_t )
+                # _ = input()
                 o, r, d, info = self.env.step(a, _step=ep_len)
                 print("step: {} a: {}  r: {}".format(ep_len, np.around(a, decimals=2), r) )
                 ep_ret += r
                 ep_len += 1
-                level_plot.append(self.env._before)
-                self.win = R_plot(level_plot, self.viz, self.win)
+                level_plot.append(self.env._rank_before)
+                self.win = R_plot(level_plot, v_plot, self.viz, self.win)
 
             print('EP_ret: %d, \t EP_Len: %d' % (ep_ret, ep_len))
 
@@ -284,14 +307,13 @@ class ppo:
 if __name__ == '__main__':
 
     import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(proc_id()%2)
 
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--hid', type=int, default=128)
-    parser.add_argument('--l', type=int, default=2)
-    parser.add_argument('--gamma', type=float, default=0.9)
+    parser.add_argument('--gamma', type=float, default=0.96)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--cpu', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=50)
@@ -308,13 +330,15 @@ if __name__ == '__main__':
     mpi_fork(args.cpu)  # run parallel code with mpi
 
     from env.KukaGymEnv import KukaDiverseObjectEnv
-    MAX_STEP = 150
+    MAX_STEP = 128
     env_fn = lambda: KukaDiverseObjectEnv(renders=False,
                                           maxSteps=MAX_STEP,
-                                          blockRandom=0.3,
+                                          blockRandom=0.2,
                                           actionRepeat=200,
                                           numObjects=1, dv=1.0,
-                                          isTest=False)
+                                          isTest=False,
+                                          proce_num=proc_id(),
+                                          rgb_only=False)
 
     model = ppo(env_fn, gamma=args.gamma,
         seed=args.seed, steps_per_epoch=MAX_STEP*args.cpu, epochs=args.epochs,

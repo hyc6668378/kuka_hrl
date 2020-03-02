@@ -288,7 +288,29 @@ def load_graph(frozen_graph_filename='model/frozen_model.pb', graph_name="Embedd
             producer_op_list=None
         )
     return graph
-# =======================================================================================
+
+
+
+def ppo_to_frozen_graph(exp_name='ppo_kuka_phase_2', model_pd_name='phase_2_policy.pd'):
+    from env.KukaGymEnv import KukaDiverseObjectEnv
+    from ppo import ppo
+
+    test_env_fn = lambda : KukaDiverseObjectEnv(renders=True,
+                         maxSteps=100,
+                         blockRandom=0.25,
+                         actionRepeat=300,
+                         numObjects=1, dv=1.0,
+                         isTest=False, phase = 2)
+    model = ppo(test_env_fn, seed=0, steps_per_epoch=128,
+            epochs=100, exp_name=exp_name, gamma=0.9,
+           test_agent=False)
+    model.load()
+    with model.graph.as_default():
+        graphdef_inf = tf.graph_util.remove_training_nodes(model.graph.as_graph_def())
+        graphdef_frozen = tf.graph_util.convert_variables_to_constants(model.sess, graphdef_inf, ['pi/pi_out'])
+        tf.io.write_graph(graphdef_frozen, "model", model_pd_name, as_text=False)
+        print("Frozen_graph in 'model/"+model_pd_name)
+
 
 def keras_model_to_frozen_graph(model_h5_name, model_pd_name):
     """ convert keras h5 model file to frozen graph(.pb file)

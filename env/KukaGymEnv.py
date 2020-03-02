@@ -1,5 +1,4 @@
 # coding=utf-8
-from stable_baselines.common.policies import CnnPolicy
 
 from env.kuka import Kuka
 import os
@@ -13,17 +12,14 @@ from pkg_resources import parse_version
 import gym
 from gym.utils import seeding
 import random
+import pyinter
+
 # from alg.embedding_map import _close_to_obj, whether_can_grasp_or_not
 # from PIL import Image
 # from copy import copy
 
 
 class KukaDiverseObjectEnv(Kuka, gym.Env):
-    """Class for Kuka environment with diverse objects.
-
-    In each episode some objects are chosen from a set of 1000 diverse objects.
-    These 1000 objects are split 90/10 into a train and test set.
-    """
 
     def __init__(self,
                  urdfRoot=pybullet_data.getDataPath(),
@@ -36,7 +32,9 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                  width=128,
                  height=128,
                  numObjects=1,
-                 isTest=False):
+                 isTest=False,
+                 proce_num=0,
+                 phase=1, rgb_only=True):
 
         # Environment Characters
         self._timeStep,     self._urdfRoot     =   1. / 240.     , urdfRoot
@@ -47,10 +45,16 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self.finger_angle_max = 0.25
         self._width,        self._height       =   width         , height
         self._success,      self._numObjects   =   False         , numObjects
+        self._proce_num, self._rgb_only   = proce_num, rgb_only
+        self.phase_2  = (phase != 1)
 
         # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
         # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
-        self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3), dtype=np.uint32)
+        if self._rgb_only:
+            self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 6), dtype=np.uint32)
+        else:
+            self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3), dtype=np.uint32)
+
 
         if self._renders:
             self.cid = p.connect(p.GUI,
@@ -97,11 +101,16 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self.terminated = 0
         self.finger_angle = 0.3
         self._success = False
-        self._rank_before = 0
+
         self.x, self.y = 0, 0
         self.out_of_range = False
         self._collision_box = False
         self._grasp_ok = False
+        self.drop_down = False
+        self._rank_before = 0
+        self.inverse_rank = 0
+        self._phase2_bigin = False
+
 
         if self._isTest: _ = os.system("rm result/_*")
 
@@ -120,9 +129,25 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         # Choose the objects in the bin.
         urdfList = self._get_random_object(
-            self._numObjects, self._isTest)
+            self._numObjects, test=self._isTest)
         self._objectUids = self._randomly_place_objects(urdfList)
+        self._init_obj_high = self._obj_high()
 
+        # phase 2
+        if self.phase_2:
+            try_init_cout = 0
+            while not self._grasp_ok:
+                self._skill_close_to_obj()
+                self._grasp_ok = self._grasp_pick_up()
+                try_init_cout +=1
+                if try_init_cout > 5:
+                    print("process: {}\tPhase2 Init Fail, Try again".format(self._proce_num))
+                    return self._reset()
+            self._rank_before = self._rank_2()
+        else:
+            self._rank_before = self._rank_1()
+
+        self._domain_random()
         obs = self._get_observation()
         return obs
 
@@ -185,14 +210,14 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         return action
 
     def _skill_close_to_obj(self):
-        img=[]
+        # img=[]
         self.finger_angle = self.finger_angle_max
         for i in range(25):
             atomic_a = self._close_to_obj_atomic_action(i)
             self._atomic_action(atomic_a, repeat_action=300)
-            img.append(self._get_observation())
-            r=self._reward()
-        return [img[0], img[6], img[15], img[24]]
+            # img.append(self._get_observation())
+            # r=self._reward()
+        # return [img[0], img[6], img[15], img[24]]
 
     def _Current_End_Effector_State(self):
         _pos = np.array( p.getLinkState(self._kuka.kukaUid, self._kuka.kukaEndEffectorIndex) )[0]
@@ -227,13 +252,6 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         before = self._obj_high()
 
-        # # open
-        # for _ in range(500):
-        #     self._kuka.applyAction( current_End_EffectorPos, self.goal_rotation_angle, fingerAngle=self.finger_angle)
-        #     p.stepSimulation()
-        #     self.finger_angle += 0.15 / 100.
-        #     self.finger_angle = np.clip(self.finger_angle, 0., 0.35)
-
         # grasp
         for _ in range(500):
             self._kuka.applyAction( current_End_EffectorPos, self.goal_rotation_angle, fingerAngle=self.finger_angle)
@@ -245,7 +263,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         # pick up
         current_End_EffectorPos = self._Current_End_EffectorPos()
-        pick_up_iter = 400
+        pick_up_iter = 300
         for _ in range(pick_up_iter):
             current_End_EffectorPos[2] = current_End_EffectorPos[2] + 0.001
             current_End_EffectorPos = np.clip(current_End_EffectorPos, a_min=np.array([0.2958, -0.4499, 0.0848]),
@@ -290,12 +308,12 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         return action
 
     def _skill_move_to_box_above(self):
-        img = []
+        # img = []
         for _ in range(18):
             atomic_a = self._move_to_box_above_and_resease_atomic_action()
             self._atomic_action(atomic_a, repeat_action=100)
-            img.append(self._get_observation())
-        return [img[4], img[9], img[17]]
+            # img.append(self._get_observation())
+        # return [img[4], img[9], img[17]]
 
     def _atomic_action(self, action, repeat_action=200):
         # 执行原子action
@@ -344,7 +362,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         # Randomize positions of each object urdf.
         objectUids = []
         for urdf_name in urdfList:
-            xpos = 0.45 + self._blockRandom * random.random()
+            xpos = 0.35 + self._blockRandom * random.random()
             ypos = 0.26 + self._blockRandom * (random.random() - .5)
             angle = np.pi / 2 + self._blockRandom * np.pi * random.random()
             orn = p.getQuaternionFromEuler([0, 0, angle])
@@ -371,58 +389,49 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                                    lightDirection=[1, 1, 1],
                                    renderer=p.ER_BULLET_HARDWARE_OPENGL
                                    )
-        rgb = np.reshape(img_arr[2], (self._height, self._width, 4))[:, :, :3]
+        rgb_1 = np.reshape(img_arr[2], (self._height, self._width, 4))[:, :, :3]
+
         # segmentation = img_arr[4]
-        #
         # x, y = np.where(segmentation == 4) # 物体的掩码是4号
-        #
         # # 手把物体挡住，找不到4号掩码，会返回空 x,y. 这时候就用上一次的 x,y
         # if x != np.array([]) and y != np.array([]):
         #     self.x, self.y = int(np.mean(x)), int(np.mean(y))
-        #
+
         # # 大小不够 就resize图像。
-        # imgs = Image.fromarray(copy(rgb[self.x-16:self.x+16, self.y-16:self.y+16, :]))
+        # imgs = Image.fromarray(copy(rgb_1[self.x-16:self.x+16, self.y-16:self.y+16, :]))
         # imgs = imgs.resize( size=(32,32) )
 
+        img_arr_2 = p.getCameraImage(width=self._width,
+                                   height=self._height,
+                                   viewMatrix=self._view_matrix_2,
+                                   projectionMatrix=self._proj_matrix,
+                                   shadow=True,
+                                   lightDirection=[1, 1, 1],
+                                   renderer=p.ER_BULLET_HARDWARE_OPENGL
+                                   )
+        rgb_2 = np.reshape(img_arr_2[2], (self._height, self._width, 4))[:, :, :3]
+
+        # (128,128,6)
+        if self._rgb_only:   return np.concatenate([rgb_1, rgb_2], axis=-1)
+
         End_Effector_state = self._Current_End_Effector_State()
-        return [rgb, End_Effector_state]
-
-    def step_skill(self, skill_num):
-
-        self._env_step +=1
-
-        if skill_num == 0:
-            _ =self._skill_close_to_obj()
-        elif skill_num == 1:
-            _ =self._grasp()
-        elif skill_num == 2:
-            _ =self._skill_move_to_box_above()
-        else:
-            _ =self._release()
-
-        obs= self._get_observation()
-        done = self._termination()
-        reward = self._up_layer_reward()
-        debug = {
-            'is_success': self._success
-        }
-
-        return obs, reward, done, debug
+        return [rgb_1, rgb_2, End_Effector_state]
 
     def step(self, action, _step=0):
         self._env_step += 1
         self._atomic_action( action )
-        self._domain_random()
+
+        if not self._isTest: self._domain_random()
+
         obs= self._get_observation()
 
-        reward = self._reward( _step )
+        reward = self._reward()
 
         done = self._termination()
-        debug = {
-            'is_success': self._success
-        }
 
-        if self._success: print("success!")
+        debug = { 'is_success': self._success }
+
+        if self._success: print("process: {}\tsuccess!".format(self._proce_num))
         return obs, reward, done, debug
 
     def collect_img(self, grasp=False):
@@ -437,77 +446,128 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         done = self._termination()
         return img, done
 
-    def _up_layer_reward(self):
-        return 0
-
-    def _reward(self, _step=0):
+    def _reward(self):
         # 如果机器人碰到框子。 直接惩罚
         if len(p.getContactPoints(bodyA=self._kuka.trayUid,
                                   bodyB=self._kuka.kukaUid)) != 0:
             self._collision_box = True
-            print("xiangzi")
+            print("process: {}\txiangzi".format(self._proce_num))
             return -1
 
         # 出界 有惩罚
         if self.out_of_range:
-            print("out_of_range")
+            print("process: {}\tout_of_range".format(self._proce_num))
             return -1
 
-        rank = self._rank()
+        # if self.phase_2:
+        #     # [obj drown down on table]  or  [not grasping obj]
+        #     if self._obj_high()< 0 or not (len(p.getContactPoints(bodyA=self._objectUids[0],
+        #                                                       bodyB=self._kuka.kukaUid)) != 0):
+        #         self.drop_down = True
+        #         print("process: {}\tDrop down".format(self._proce_num))
+        #         return -1
 
-        reward = rank-self._rank_before
+        rank = self._rank_1()
+
+        reward = rank - self._rank_before
         self._rank_before = rank
+
+        if reward < 0:
+            self.inverse_rank +=1
         return reward
 
-    def _rank(self):
-        obj = self._low_dim_full_state()[:3]
-        if self._grasp_ok and self._obj_high()>0:
-            obj = obj[:2] # don't use z
-            box_pos = np.array( p.getBasePositionAndOrientation(self._kuka.trayUid)[0] )[:2]
-            dis_to_box = np.sqrt(np.sum((obj - box_pos)**2))
+    def _rank_2(self):
+        obj_xy = self._low_dim_full_state()[:2]  # don't use z
 
-            if dis_to_box > 0.57: rank = 17
-            elif 0.37 < dis_to_box <= 0.57: rank = 19
-            elif 0.27 < dis_to_box <= 0.37: rank = 21
-            elif 0.18 < dis_to_box <= 0.27: rank = 23
-            elif 0.14 < dis_to_box <= 0.18: rank = 25
-            elif 0.09 < dis_to_box <= 0.14: rank = 27
-            else:
+        box_pos_xy = np.array(p.getBasePositionAndOrientation(self._kuka.trayUid)[0])[:2]
+        dis_to_box = np.sqrt(np.sum((obj_xy - box_pos_xy) ** 2))
+        rank = 0
+        if dis_to_box > 0.57: rank = 14
+        elif dis_to_box in pyinter.openclosed(0.5, 0.57): rank = 15
+        elif dis_to_box in pyinter.openclosed(0.4, 0.5): rank = 16
+        elif dis_to_box in pyinter.openclosed(0.3, 0.4): rank = 17
+        elif dis_to_box in pyinter.openclosed(0.23, 0.3): rank = 18
+        elif dis_to_box <= 0.23:
+            self.drop_down = True
+            rank = 19
+        print("process: {}\tPhase_2 !!\trank: {}\tdis_to_box:{.3f}".format(self._proce_num, rank, dis_to_box))
+        return rank
+
+    def _rank_1(self):
+
+        rank=0
+        self._phase2_bigin = False
+        # leave table
+
+
+        # obj leave table
+        if len(p.getContactPoints(bodyA=self._objectUids[0],
+                                  bodyB=self._tableUid)) == 0 or self.drop_down:
+            if self.drop_down:
                 self._release()
+                if len(p.getContactPoints(bodyA=self._objectUids[0],
+                                      bodyB=self._kuka.trayUid)) != 0:
+                    rank = 20
+                    print("process: {}\tAll_success !!".format(self._proce_num))
+                else:
+                    rank = 19
+                    print("process: {}\t release but not in frame..".format(self._proce_num))
                 self._success = True
-                rank = 35
+
+
+            h = self._obj_high() - self._init_obj_high
+            if h <= 0.01:
+                rank = 9
+                print("process: {}\tobj rising up [0.5-1] cm !".format(self._proce_num))
+            elif h in pyinter.openclosed(0.01, 0.04):
+                rank = 10
+                print("process: {}\tobj rising up [1-4] cm !".format(self._proce_num))
+            elif h in pyinter.openclosed(0.04, 0.07):
+                rank = 11
+                print("process: {}\tobj rising up [4-7] cm !".format(self._proce_num))
+            elif h in pyinter.openclosed(0.07, 0.1):
+                rank = 12
+                print("process: {}\tobj rising up [7-10] cm !".format(self._proce_num))
+            elif h in pyinter.openclosed(0.1, 0.15):
+                rank = 13
+                print("process: {}\tobj rising up [10-15] cm !".format(self._proce_num))
+            elif 0.15 < h:
+                rank = self._rank_2()
+                self._phase2_bigin = True
         else:
-            self._grasp_ok = False
-            current_End_EffectorPos = np.array( p.getLinkState(self._kuka.kukaUid,
-                                                               self._kuka.kukaEndEffectorIndex)[0] )
-            obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)# 物体的坐标和真实稍稍错位一点， 一点点调出来的。
+            obj = self._low_dim_full_state()[:3]
+            current_End_EffectorPos = np.array(p.getLinkState(self._kuka.kukaUid,
+                                                              self._kuka.kukaEndEffectorIndex)[0])
+            obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)  # 物体的坐标和真实稍稍错位一点， 一点点调出来的。
             gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
             dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
-            dis = np.sqrt(np.sum(dis**2))
+            dis = np.sqrt(np.sum(dis ** 2))
 
             if dis>0.57: rank = 0
-            elif 0.37< dis <=0.57: rank = 1
-            elif 0.27< dis <=0.37: rank = 2
-            elif 0.18< dis <=0.27: rank = 3
-            elif 0.14< dis <=0.18: rank = 4
-            elif 0.09 < dis <= 0.14: rank = 5
-            elif 0.05 < dis <= 0.09: rank = 6
-            else:
+            elif dis in pyinter.openclosed(0.37, 0.57): rank = 1
+            elif dis in pyinter.openclosed(0.27, 0.37): rank = 2
+            elif dis in pyinter.openclosed(0.18, 0.27): rank = 3
+            elif dis in pyinter.openclosed(0.14, 0.18): rank = 4
+            elif dis in pyinter.openclosed(0.09, 0.14): rank = 5
+            elif dis in pyinter.openclosed(0.05, 0.09): rank = 6
+
+            elif p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] -\
+            p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2:
                 rank = 7
-
-            if rank == 7:
-                if self._grasp_pick_up():
-                    self._grasp_ok = True
-                    rank = 15
-                    print("grasp_success !")
-                else:
-                    rank = 3
-                    print("grasp_not_success..")
-
+                print("process: {}\tClose enough but gripper close..".format(self._proce_num))
+            else:
+                rank = 8
+                print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
         return rank
 
     def _termination(self):
-        return (self._env_step >= self._maxSteps) or self._success or self.out_of_range or self._collision_box
+        if self._isTest: return (self._env_step >= self._maxSteps) or self._success
+
+        if self.inverse_rank > 2: print("process: {}\tinverse_rank>2".format(self._proce_num))
+
+        return (self._env_step >= self._maxSteps) or \
+               self._success or self.out_of_range or \
+               self._collision_box or self.inverse_rank>2
 
     def _get_random_object(self, num_objects, test):
         """Randomly choose an object urdf from the random_urdfs directory.

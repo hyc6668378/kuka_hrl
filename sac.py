@@ -121,9 +121,9 @@ class sac_ES:
                 print('{}\t  {}'.format(v.name, str(v.shape)))
 
     def __make_model(self):
-        self.x1_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x1_ph')
+        self.x1_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o1_ph')
 
-        self.x2_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='x2_ph')
+        self.x2_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o2_ph')
 
         self.a_ph, self.r_ph, self.d_ph, self.q_ij_ph = core.placeholders(self.act_dim, None, None, self.ac_per_state)
 
@@ -335,10 +335,12 @@ def Count_Variables():
     print(('\nNumber of parameters: \t pi: %d, \t ' +
            'v: %d\n') % var_counts)
 
-def R_plot(r_plot, viz, win):
+def R_plot(r_plot,v_plot, viz, win):
     plt.cla()
     plt.plot(r_plot, color='r', label='Rank')
-    plt.ylim(0,15)
+    plt.plot(v_plot, color='blue', label='V')
+
+    # plt.ylim(0,15)
     # plt.xlim(0,25)
     plt.xlabel('Step')
     plt.ylabel('Rank')
@@ -363,7 +365,7 @@ if __name__ == '__main__':
                          numObjects=1, dv=1.0,
                          isTest=False)
 
-    model = sac_ES(env_fn, steps_per_epoch=MAX_STEP, epochs=700, gamma=0.9,
+    model = sac_ES(env_fn, steps_per_epoch=MAX_STEP, epochs=700, gamma=0.0,
                    polyak=0.995, memory_size=20000, lr=3e-4, alpha=0.2,
                    batch_size=32, start_steps=300, max_ep_len=500, **args)
 

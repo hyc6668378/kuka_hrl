@@ -25,7 +25,8 @@ TAU = 0.001         # soft replacement
 
 class DDPG(object):
     def __init__(self, rank, batch_size, priority, use_n_step=False, n_step_return=5,
-                 LAMBDA_BC = 100, LAMBDA_predict=0.5, policy_delay=1, use_TD3=False, experiment_name='none', Q_value_range=(-250, 250), **kwargs):
+                 LAMBDA_BC = 100, LAMBDA_predict=0.5, policy_delay=1, use_TD3=False,
+                 experiment_name='none', Q_value_range=(-250, 250), **kwargs):
 
         self.batch_size = batch_size
         self.use_prioritiy = priority
@@ -428,17 +429,28 @@ class DDPG(object):
         fc_a = partial(tf.layers.dense, activation=None, trainable=trainable)
         conv2_a = partial( conv2_, trainable=trainable)
         relu = partial(tf.nn.relu)
+
         with tf.variable_scope(scope):
-            # conv -> relu
-            net = relu(conv2_a( observe_input, 32, 7, 4 ))
-            net = relu(conv2_a( net, 64, 5, 2 ))
-            net = relu(conv2_a( net, 64, 3, 2 ))
-            net = relu(conv2_a( net, 64, 3, 1 ))
+            net = tf.layers.conv2d(observe_input, filters=64, kernel_size=3, activation=tf.nn.relu,
+                                   strides=2, padding='valid', name='conv2_1', trainable=trainable)
+            net = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
+            net = tf.layers.conv2d(net, filters=128, kernel_size=4, activation=tf.nn.relu, trainable=trainable,
+                                   strides=1, padding='valid', name='conv2_2')
+            net = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
+            net = tf.layers.conv2d(net, filters=64, kernel_size=3, name='conv2_3', activation=tf.nn.relu, trainable=trainable,
+                                   strides=2, padding='valid')
+            net_max = tf.layers.max_pooling2d(net, pool_size=2, strides=2)
 
+            net = tf.layers.conv2d(net_max, filters=96, kernel_size=2, name='conv2_4', activation=tf.nn.relu, trainable=trainable,
+                                   strides=2, padding='valid')
+
+            net = tf.layers.flatten(net, name='cnn_flatten')
+
+            # 合起来
+            net = tf.concat([net, tf.layers.flatten(net_max)], axis=1)
             net = tf.layers.flatten(net)
-            net = relu(fc_a( net, 128  ))
+            # conv -> relu
 
-            net = relu(fc_a( net, 128 ))
             net = relu(fc_a( net, 128 ))
             action_output = fc_a( net, a_space.shape[0], activation=tf.nn.tanh,
                                   kernel_initializer=tf.initializers.random_uniform(minval=-0.0003,
