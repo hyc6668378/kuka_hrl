@@ -35,7 +35,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                  isTest=False,
                  proce_num=0,
                  phase=1, rgb_only=True,
-                 single_img=False):
+                 single_img=False,
+                 verbose=True):
 
         # Environment Characters
         self._timeStep,     self._urdfRoot     =   1. / 240.     , urdfRoot
@@ -48,7 +49,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self._success,      self._numObjects   =   False         , numObjects
         self._proce_num, self._rgb_only, self._single_img   = proce_num, rgb_only, single_img
 
-        self.phase_2  = (phase != 1)
+        self.phase_2, self._verbose   = (phase != 1), verbose
 
         # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
         # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
@@ -145,7 +146,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                 self._grasp_ok = self._grasp_pick_up()
                 try_init_cout +=1
                 if try_init_cout > 5:
-                    print("process: {}\tPhase2 Init Fail, Try again".format(self._proce_num))
+                    if self._verbose: print("process: {}\tPhase2 Init Fail, Try again".format(self._proce_num))
                     return self._reset()
             self._rank_before = self._rank_2()
         else:
@@ -433,7 +434,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         debug = { 'is_success': self._success }
 
-        if self._success: print("process: {}\tsuccess!".format(self._proce_num))
+        if self._success and self._verbose: print("process: {}\tsuccess!".format(self._proce_num))
         return obs, reward, done, debug
 
     def collect_img(self, grasp=False):
@@ -453,12 +454,12 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         if len(p.getContactPoints(bodyA=self._kuka.trayUid,
                                   bodyB=self._kuka.kukaUid)) != 0:
             self._collision_box = True
-            print("process: {}\txiangzi".format(self._proce_num))
+            if self._verbose: print("process: {}\txiangzi".format(self._proce_num))
             return -1
 
         # 出界 有惩罚
         if self.out_of_range:
-            print("process: {}\tout_of_range".format(self._proce_num))
+            if self._verbose: print("process: {}\tout_of_range".format(self._proce_num))
             return -1
 
         # if self.phase_2:
@@ -493,7 +494,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         elif dis_to_box <= 0.23:
             self.drop_down = True
             rank = 19
-        print("process: {}\tPhase_2 !!\trank: {}\tdis_to_box:{.3f}".format(self._proce_num, rank, dis_to_box))
+        if self._verbose: print("process: {}\tPhase_2 !!\trank: {}\tdis_to_box:{.3f}".format(self._proce_num, rank, dis_to_box))
         return rank
 
     def _rank_1(self):
@@ -508,29 +509,29 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                 if len(p.getContactPoints(bodyA=self._objectUids[0],
                                       bodyB=self._kuka.trayUid)) != 0:
                     rank = 20
-                    print("process: {}\tAll_success !!".format(self._proce_num))
+                    if self._verbose: print("process: {}\tAll_success !!".format(self._proce_num))
                 else:
                     rank = 19
-                    print("process: {}\t release but not in frame..".format(self._proce_num))
+                    if self._verbose: print("process: {}\t release but not in frame..".format(self._proce_num))
                 self._success = True
                 return rank
 
             h = self._obj_high() - self._init_obj_high
             if h <= 0.01:
                 rank = 9
-                print("process: {}\tobj rising up [0.5-1] cm !".format(self._proce_num))
+                if self._verbose: print("process: {}\tobj rising up [0.5-1] cm !".format(self._proce_num))
             elif h in pyinter.openclosed(0.01, 0.04):
                 rank = 10
-                print("process: {}\tobj rising up [1-4] cm !".format(self._proce_num))
+                if self._verbose: print("process: {}\tobj rising up [1-4] cm !".format(self._proce_num))
             elif h in pyinter.openclosed(0.04, 0.07):
                 rank = 11
-                print("process: {}\tobj rising up [4-7] cm !".format(self._proce_num))
+                if self._verbose: print("process: {}\tobj rising up [4-7] cm !".format(self._proce_num))
             elif h in pyinter.openclosed(0.07, 0.1):
                 rank = 12
-                print("process: {}\tobj rising up [7-10] cm !".format(self._proce_num))
+                if self._verbose: print("process: {}\tobj rising up [7-10] cm !".format(self._proce_num))
             elif h in pyinter.openclosed(0.1, 0.15):
                 rank = 13
-                print("process: {}\tobj rising up [10-15] cm !".format(self._proce_num))
+                if self._verbose: print("process: {}\tobj rising up [10-15] cm !".format(self._proce_num))
             elif 0.15 < h:
                 rank = self._rank_2()
                 self._phase2_bigin = True
@@ -557,17 +558,17 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             elif p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] -\
             p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2:
                 rank = 7
-                print("process: {}\tClose enough but gripper close..".format(self._proce_num))
+                if self._verbose: print("process: {}\tClose enough but gripper close..".format(self._proce_num))
             else:
                 rank = 8
-                print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
+                if self._verbose: print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
             return rank
 
 
     def _termination(self):
         if self._isTest: return (self._env_step >= self._maxSteps) or self._success
 
-        if self.inverse_rank > 2: print("process: {}\tinverse_rank>2".format(self._proce_num))
+        if self.inverse_rank > 2 and self._verbose: print("process: {}\tinverse_rank>2".format(self._proce_num))
 
         return (self._env_step >= self._maxSteps) or \
                self._success or self.out_of_range or \
