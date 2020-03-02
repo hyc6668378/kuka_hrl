@@ -209,7 +209,6 @@ class ppo:
                 print('process %d: Early stopping at step %d due to reaching max kl.' % (proc_id(), i))
                 break
 
-
         for _ in range(self.train_v_iters):
             self.sess.run(self.train_v, feed_dict=inputs)
 
@@ -246,7 +245,7 @@ class ppo:
                     if proc_id() == 0:
                         ep_s = self.sess.run(self.test_summary, {self.ep_ret_ph: ep_ret,
                                                        self.ep_len_ph: ep_len})
-                        self.writer.add_summary(ep_s)
+                        self.writer.add_summary(ep_s, global_step=epoch)
 
                     o, ep_ret, ep_len = self.env.reset(), 0, 0
 
@@ -330,14 +329,14 @@ if __name__ == '__main__':
     mpi_fork(args.cpu)  # run parallel code with mpi
 
     from env.KukaGymEnv import KukaDiverseObjectEnv
-    MAX_STEP = 128
+    MAX_STEP = 64
     env_fn = lambda: KukaDiverseObjectEnv(renders=False,
                                           maxSteps=MAX_STEP,
                                           blockRandom=0.2,
                                           actionRepeat=200,
                                           numObjects=1, dv=1.0,
                                           isTest=False,
-                                          proce_num=proc_id(),
+                                          proce_num=proc_id(), single_img=False,
                                           rgb_only=False)
 
     model = ppo(env_fn, gamma=args.gamma,

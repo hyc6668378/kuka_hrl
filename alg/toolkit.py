@@ -265,7 +265,7 @@ def show_embed(embed, label, step, class_num):
         # embed [label == ite][:, 1]
         # ite*np.ones_like(embed [label == ite][:, 0]),
     plt.title('scatter plot ')
-    plt.xlabel('variables x')
+    plt.xlabel('variables latent_s')
     plt.ylabel('variables y')
     plt.legend()
     plt.savefig('result/'+str(step)+'.png')

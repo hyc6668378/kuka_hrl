@@ -92,7 +92,7 @@ class Kuka:
     def getActionDimension(self):
         if (self.useInverseKinematics):
             return len(self.motorIndices)
-        return 6  # position x,y,z and roll/pitch/yaw euler angles of end effector
+        return 6  # position latent_s,y,z and roll/pitch/yaw euler angles of end effector
 
     def getObservationDimension(self):
         return len(self.getObservation())

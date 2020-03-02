@@ -34,7 +34,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                  numObjects=1,
                  isTest=False,
                  proce_num=0,
-                 phase=1, rgb_only=True):
+                 phase=1, rgb_only=True,
+                 single_img=False):
 
         # Environment Characters
         self._timeStep,     self._urdfRoot     =   1. / 240.     , urdfRoot
@@ -45,13 +46,17 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self.finger_angle_max = 0.25
         self._width,        self._height       =   width         , height
         self._success,      self._numObjects   =   False         , numObjects
-        self._proce_num, self._rgb_only   = proce_num, rgb_only
+        self._proce_num, self._rgb_only, self._single_img   = proce_num, rgb_only, single_img
+
         self.phase_2  = (phase != 1)
 
         # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
         # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
         if self._rgb_only:
             self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 6), dtype=np.uint32)
+            if self._single_img:
+                self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3),
+                                                    dtype=np.uint32)
         else:
             self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3), dtype=np.uint32)
 
@@ -102,7 +107,6 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self.finger_angle = 0.3
         self._success = False
 
-        self.x, self.y = 0, 0
         self.out_of_range = False
         self._collision_box = False
         self._grasp_ok = False
@@ -173,8 +177,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             full_state.extend(pos)
         full_state.extend( self._kuka.getObservation())
         full_state = np.array(full_state).flatten()
-        # 'obj_1.x', 'obj_1.y', 'obj_1.z', ... ,
-        # 'gripper.x', 'gripper.y', 'gripper.z', 'gripper.r', 'gripper.p', 'gripper.y'
+        # 'obj_1.latent_s', 'obj_1.y', 'obj_1.z', ... ,
+        # 'gripper.latent_s', 'gripper.y', 'gripper.z', 'gripper.r', 'gripper.p', 'gripper.y'
         return full_state
 
     def _obj_high(self):
@@ -377,7 +381,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         return objectUids
 
     def seed(self, seed=None):
-        self.np_random, seed = seeding.np_random(seed)
+        _, seed = seeding.np_random(seed)
+        random.seed(seed)
         return [seed]
 
     def _get_observation(self):
@@ -391,15 +396,12 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                                    )
         rgb_1 = np.reshape(img_arr[2], (self._height, self._width, 4))[:, :, :3]
 
-        # segmentation = img_arr[4]
-        # x, y = np.where(segmentation == 4) # 物体的掩码是4号
-        # # 手把物体挡住，找不到4号掩码，会返回空 x,y. 这时候就用上一次的 x,y
-        # if x != np.array([]) and y != np.array([]):
-        #     self.x, self.y = int(np.mean(x)), int(np.mean(y))
-
-        # # 大小不够 就resize图像。
-        # imgs = Image.fromarray(copy(rgb_1[self.x-16:self.x+16, self.y-16:self.y+16, :]))
-        # imgs = imgs.resize( size=(32,32) )
+        End_Effector_state = self._Current_End_Effector_State()
+        if self._single_img:
+            if self._rgb_only:
+                return rgb_1
+            else:
+                return [rgb_1, End_Effector_state]
 
         img_arr_2 = p.getCameraImage(width=self._width,
                                    height=self._height,
@@ -412,10 +414,10 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         rgb_2 = np.reshape(img_arr_2[2], (self._height, self._width, 4))[:, :, :3]
 
         # (128,128,6)
-        if self._rgb_only:   return np.concatenate([rgb_1, rgb_2], axis=-1)
-
-        End_Effector_state = self._Current_End_Effector_State()
-        return [rgb_1, rgb_2, End_Effector_state]
+        if self._rgb_only:
+            return np.concatenate([rgb_1, rgb_2], axis=-1)
+        else:
+            return [rgb_1, rgb_2, End_Effector_state]
 
     def step(self, action, _step=0):
         self._env_step += 1
@@ -481,7 +483,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
         box_pos_xy = np.array(p.getBasePositionAndOrientation(self._kuka.trayUid)[0])[:2]
         dis_to_box = np.sqrt(np.sum((obj_xy - box_pos_xy) ** 2))
-        rank = 0
+
+
         if dis_to_box > 0.57: rank = 14
         elif dis_to_box in pyinter.openclosed(0.5, 0.57): rank = 15
         elif dis_to_box in pyinter.openclosed(0.4, 0.5): rank = 16
@@ -495,10 +498,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
 
     def _rank_1(self):
 
-        rank=0
         self._phase2_bigin = False
-        # leave table
-
 
         # obj leave table
         if len(p.getContactPoints(bodyA=self._objectUids[0],
@@ -513,7 +513,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                     rank = 19
                     print("process: {}\t release but not in frame..".format(self._proce_num))
                 self._success = True
-
+                return rank
 
             h = self._obj_high() - self._init_obj_high
             if h <= 0.01:
@@ -534,6 +534,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             elif 0.15 < h:
                 rank = self._rank_2()
                 self._phase2_bigin = True
+            return rank
+
         else:
             obj = self._low_dim_full_state()[:3]
             current_End_EffectorPos = np.array(p.getLinkState(self._kuka.kukaUid,
@@ -551,6 +553,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             elif dis in pyinter.openclosed(0.09, 0.14): rank = 5
             elif dis in pyinter.openclosed(0.05, 0.09): rank = 6
 
+            # joint Angle difference.
             elif p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] -\
             p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2:
                 rank = 7
@@ -558,7 +561,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             else:
                 rank = 8
                 print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
-        return rank
+            return rank
+
 
     def _termination(self):
         if self._isTest: return (self._env_step >= self._maxSteps) or self._success
