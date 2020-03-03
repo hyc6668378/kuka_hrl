@@ -4,9 +4,9 @@ import numpy as np
 import tensorflow as tf
 config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
 from sac import Count_Variables
-import spinup.algos.tf1.ppo.core as core
+import alg.ppo_core as ppo_core
 from spinup.utils.mpi_tf import MpiAdamOptimizer, sync_all_params
-from spinup.utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs
+from spinup.utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar
 from tqdm import tqdm
 
 import random
@@ -24,13 +24,13 @@ class PPOBuffer:
     """
 
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
-        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs_buf_2 = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs_End_buf = np.zeros(core.combined_shape(size, 5), dtype=np.float32)
+        self.obs_buf = np.zeros(ppo_core.combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs_buf_2 = np.zeros(ppo_core.combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs_End_buf = np.zeros(ppo_core.combined_shape(size, 5), dtype=np.float32)
 
-        self.f_s = np.zeros(core.combined_shape(size, 11), dtype=np.float32)
+        self.f_s = np.zeros(ppo_core.combined_shape(size, 11), dtype=np.float32)
 
-        self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
+        self.act_buf = np.zeros(ppo_core.combined_shape(size, act_dim), dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.ret_buf = np.zeros(size, dtype=np.float32)
@@ -78,10 +78,10 @@ class PPOBuffer:
 
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
+        self.adv_buf[path_slice] = ppo_core.discount_cumsum(deltas, self.gamma * self.lam)
 
         # the next line computes rewards-to-go, to be targets for the value function
-        self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
+        self.ret_buf[path_slice] = ppo_core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
 
@@ -174,9 +174,9 @@ class ppo:
         self.o_low_dim_ph = tf.placeholder(tf.float32, [None, 5], name='o_low_dim_ph')
         self.f_s_ph = tf.placeholder(tf.float32, [None, 11], name='f_s_ph')
 
-        a_ph, adv_ph, ret_ph, logp_old_ph = core.placeholders(self.act_dim, None, None, None)
-        pi, logp, logp_pi, self.v, Auxiliary_loss = core.mlp_actor_critic(self.o1_ph, self.o2_ph, self.o_low_dim_ph, self.f_s_ph, a_ph,
-                                                          action_space=self.env.action_space)
+        a_ph, adv_ph, ret_ph, logp_old_ph = ppo_core.placeholders(self.act_dim, None, None, None)
+        pi, logp, logp_pi, self.v = ppo_core.mlp_actor_critic(self.o1_ph, self.o2_ph, self.o_low_dim_ph, self.f_s_ph, a_ph,
+                                                              action_space=self.env.action_space)
 
         self.all_phs = [self.o1_ph, self.o2_ph, self.o_low_dim_ph, self.f_s_ph, a_ph, adv_ph, ret_ph, logp_old_ph]
 
@@ -185,7 +185,7 @@ class ppo:
         # PPO objectives
         ratio = tf.exp(logp - logp_old_ph)  # pi(a|s) / pi_old(a|s)
         min_adv = tf.where(adv_ph > 0, (1 + self.clip_ratio) * adv_ph, (1 - self.clip_ratio) * adv_ph)
-        self.pi_loss = -(tf.reduce_mean(tf.minimum(ratio * adv_ph, min_adv)) + Auxiliary_loss)
+        self.pi_loss = -tf.reduce_mean(tf.minimum(ratio * adv_ph, min_adv))
         self.v_loss = tf.reduce_mean((ret_ph - self.v) ** 2)
 
         # Info (useful to watch during learning)
