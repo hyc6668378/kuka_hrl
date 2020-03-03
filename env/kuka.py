@@ -43,8 +43,7 @@ class Kuka:
     def reset(self):
         objects = p.loadSDF(os.path.join(self.urdfRootPath, "kuka_iiwa/kuka_with_gripper2.sdf"))
         self.kukaUid = objects[0]
-        # for i in range (p.getNumJoints(self.kukaUid)):
-        #  print(p.getJointInfo(self.kukaUid,i))
+
         p.resetBasePositionAndOrientation(self.kukaUid, [-0.100000, 0.000000, 0.070000],
                                           [0.000000, 0.000000, 0.000000, 1.000000])
 
@@ -84,8 +83,6 @@ class Kuka:
             jointInfo = p.getJointInfo(self.kukaUid, i)
             qIndex = jointInfo[3]
             if qIndex > -1:
-                # print("motorname")
-                # print(jointInfo[1])
                 self.motorNames.append(str(jointInfo[1]))
                 self.motorIndices.append(i)
 
@@ -158,10 +155,4 @@ class Kuka:
 
             p.setJointMotorControl2(self.kukaUid, 10, p.POSITION_CONTROL, targetPosition=0, force=self.fingerTipForce)
             p.setJointMotorControl2(self.kukaUid, 13, p.POSITION_CONTROL, targetPosition=0, force=self.fingerTipForce)
-
-        else:
-            for action in range(len(motorCommands)):
-                motor = self.motorIndices[action]
-                p.setJointMotorControl2(self.kukaUid, motor, p.POSITION_CONTROL, targetPosition=motorCommands[action],
-                                        force=self.maxForce)
 

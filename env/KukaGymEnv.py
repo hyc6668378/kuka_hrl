@@ -49,7 +49,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         self._success,      self._numObjects   =   False         , numObjects
         self._proce_num, self._rgb_only, self._single_img   = proce_num, rgb_only, single_img
 
-        self.phase_2, self._verbose   = (phase != 1), verbose
+        self.phase_2, self._verbose, = (phase != 1), verbose
 
         # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
         # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
@@ -398,6 +398,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         rgb_1 = np.reshape(img_arr[2], (self._height, self._width, 4))[:, :, :3]
 
         End_Effector_state = self._Current_End_Effector_State()
+
         if self._single_img:
             if self._rgb_only:
                 return rgb_1
@@ -419,6 +420,30 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             return np.concatenate([rgb_1, rgb_2], axis=-1)
         else:
             return [rgb_1, rgb_2, End_Effector_state]
+
+
+    def full_state(self):
+        End_Effector_state = self._Current_End_Effector_State()
+        delta_obj_h = np.array([self._obj_high() - self._init_obj_high])
+        collision_box = np.array([float(len(p.getContactPoints(bodyA=self._kuka.trayUid,
+                                                               bodyB=self._kuka.kukaUid)) != 0)])
+        collision_obj = np.array([float(len(p.getContactPoints(bodyA=self._objectUids[0],
+                                                               bodyB=self._kuka.kukaUid)) != 0)])
+
+        dis_gripper_2_obj = np.array([self._dis_gripper_2_obj()])
+        gripper_close = np.array([float(p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] - \
+                                        p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2)])
+        obj_2_tray = np.array([self._dis_obj_2_tray()])
+
+        full_state = np.concatenate([End_Effector_state,
+                                     delta_obj_h,
+                                     collision_box,
+                                     collision_obj,
+                                     dis_gripper_2_obj,
+                                     gripper_close,
+                                     obj_2_tray], axis=-1)
+        return full_state
+
 
     def step(self, action, _step=0):
         self._env_step += 1
@@ -480,11 +505,8 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         return reward
 
     def _rank_2(self):
-        obj_xy = self._low_dim_full_state()[:2]  # don't use z
 
-        box_pos_xy = np.array(p.getBasePositionAndOrientation(self._kuka.trayUid)[0])[:2]
-        dis_to_box = np.sqrt(np.sum((obj_xy - box_pos_xy) ** 2))
-
+        dis_to_box = self._dis_obj_2_tray()
 
         if dis_to_box > 0.57: rank = 14
         elif dis_to_box in pyinter.openclosed(0.5, 0.57): rank = 15
@@ -538,13 +560,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             return rank
 
         else:
-            obj = self._low_dim_full_state()[:3]
-            current_End_EffectorPos = np.array(p.getLinkState(self._kuka.kukaUid,
-                                                              self._kuka.kukaEndEffectorIndex)[0])
-            obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)  # 物体的坐标和真实稍稍错位一点， 一点点调出来的。
-            gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
-            dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
-            dis = np.sqrt(np.sum(dis ** 2))
+            dis = self._dis_gripper_2_obj()
 
             if dis>0.57: rank = 0
             elif dis in pyinter.openclosed(0.37, 0.57): rank = 1
@@ -563,6 +579,23 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                 rank = 8
                 if self._verbose: print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
             return rank
+
+    def _dis_gripper_2_obj(self):
+        obj = self._low_dim_full_state()[:3]
+        current_End_EffectorPos = np.array(p.getLinkState(self._kuka.kukaUid,
+                                                          self._kuka.kukaEndEffectorIndex)[0])
+        obj_offset = np.array([0.0, 0.02, 0.0], dtype=np.float32)  # 物体的坐标和真实稍稍错位一点， 一点点调出来的。
+        gripper_offset = np.array([0.0, 0.0, 0.25], dtype=np.float32)
+        dis = obj - current_End_EffectorPos + obj_offset + gripper_offset
+        dis = np.sqrt(np.sum(dis ** 2))
+        return dis
+
+    def _dis_obj_2_tray(self):
+        obj_xy = self._low_dim_full_state()[:2]  # don't use z
+
+        box_pos_xy = np.array(p.getBasePositionAndOrientation(self._kuka.trayUid)[0])[:2]
+        dis_to_box = np.sqrt(np.sum((obj_xy - box_pos_xy) ** 2))
+        return dis_to_box
 
 
     def _termination(self):
