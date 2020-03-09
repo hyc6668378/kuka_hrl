@@ -17,18 +17,12 @@ sns.set(style="darkgrid", font_scale=1.2)
 from sac import R_plot
 
 class PPOBuffer:
-    """
-    A buffer for storing trajectories experienced by a PPO agent interacting
-    with the environment, and using Generalized Advantage Estimation (GAE-Lambda)
-    for calculating the advantages of state-action pairs.
-    """
-
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
         self.obs_buf = np.zeros(ppo_core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs_buf_2 = np.zeros(ppo_core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs_End_buf = np.zeros(ppo_core.combined_shape(size, 5), dtype=np.float32)
 
-        self.f_s = np.zeros(ppo_core.combined_shape(size, 11), dtype=np.float32)
+        self.f_s = np.zeros(ppo_core.combined_shape(size, 14), dtype=np.float32)
 
         self.act_buf = np.zeros(ppo_core.combined_shape(size, act_dim), dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)
@@ -40,9 +34,6 @@ class PPOBuffer:
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
     def store(self, obs, f_s, act, rew, val, logp):
-        """
-        Append one timestep of agent-environment interaction to the buffer.
-        """
         assert self.ptr < self.max_size  # buffer has to have room so you can store
         self.obs_buf[self.ptr] = obs[0]
         self.obs_buf_2[self.ptr] = obs[1]
@@ -57,21 +48,6 @@ class PPOBuffer:
         self.ptr += 1
 
     def finish_path(self, last_val=0):
-        """
-        Call this at the end of a trajectory, or when one gets cut off
-        by an epoch ending. This looks back in the buffer to where the
-        trajectory started, and uses rewards and value estimates from
-        the whole trajectory to compute advantage estimates with GAE-Lambda,
-        as well as compute the rewards-to-go for each state, to use as
-        the targets for the value function.
-
-        The "last_val" argument should be 0 if the trajectory ended
-        because the agent reached a terminal state (died), and otherwise
-        should be V(s_T), the value function estimated for the last state.
-        This allows us to bootstrap the reward-to-go calculation to account
-        for timesteps beyond the arbitrary episode horizon (or epoch cutoff).
-        """
-
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(self.rew_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
@@ -86,11 +62,6 @@ class PPOBuffer:
         self.path_start_idx = self.ptr
 
     def get(self):
-        """
-        Call this at the end of an epoch to get all of the data from
-        the buffer, with advantages appropriately normalized (shifted to have
-        mean zero and std one). Also, resets some pointers in the buffer.
-        """
         assert self.ptr == self.max_size  # buffer has to be full before you can get
         self.ptr, self.path_start_idx = 0, 0
         # the next two lines implement the advantage normalization trick
@@ -172,7 +143,7 @@ class ppo:
         self.o1_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o1_ph')
         self.o2_ph = tf.placeholder(tf.float32, [None, 128, 128, 3], name='o2_ph')
         self.o_low_dim_ph = tf.placeholder(tf.float32, [None, 5], name='o_low_dim_ph')
-        self.f_s_ph = tf.placeholder(tf.float32, [None, 11], name='f_s_ph')
+        self.f_s_ph = tf.placeholder(tf.float32, [None, 14], name='f_s_ph')
 
         a_ph, adv_ph, ret_ph, logp_old_ph = ppo_core.placeholders(self.act_dim, None, None, None)
         pi, logp, logp_pi, self.v = ppo_core.mlp_actor_critic(self.o1_ph, self.o2_ph, self.o_low_dim_ph, self.f_s_ph, a_ph,
@@ -240,7 +211,10 @@ class ppo:
                     if not (terminal):
                         print('process %d: trajectory cut off by epoch at %d steps.' % (proc_id(), ep_len))
                     # if trajectory didn't reach terminal state, bootstrap value target
-                    last_val = 0 if d else self.sess.run(self.v, feed_dict={self.f_s_ph: f_s[np.newaxis,]})
+                    last_val = 0 if d else self.sess.run(self.v, feed_dict={self.o1_ph: o[0][np.newaxis, ],
+                                                                            self.o2_ph: o[1][np.newaxis, ],
+                                                                            self.o_low_dim_ph: o[2][np.newaxis,],
+                                                                            self.f_s_ph: f_s[np.newaxis,]})
                     self.buf.finish_path(last_val)
 
                     if proc_id() == 0:

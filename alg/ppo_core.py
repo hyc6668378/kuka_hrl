@@ -133,5 +133,6 @@ def mlp_actor_critic(o1, o2, o_low_dim_ph, f_s, a, hidden_sizes=(128, 128, 128),
                                        hidden_sizes, output_activation, action_space)
 
     with tf.variable_scope('v'):
-        v = tf.squeeze(mlp( f_s, list(hidden_sizes)+[1], None), axis=1)
+        v_latent = tf.concat([_cnn(o1, 'o1_cnn'), _cnn(o2, 'o2_cnn'), f_s], axis=-1)
+        v = tf.squeeze(mlp( v_latent, list(hidden_sizes)+[1], None), axis=1)
     return pi, logp, logp_pi, v

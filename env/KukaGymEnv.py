@@ -54,7 +54,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         # self._can_grasp_or_not = whether_can_grasp_or_not() # 抓一下能否抓到物体
         # self._close_to_obj     = _close_to_obj()  # 到技巧'_close_to_obj'的第几阶段了？
         if self._rgb_only:
-            self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 6), dtype=np.uint32)
+            self.observation_space = spaces.Box(low=0, high=255, shape=(self._width*2, self._height, 3), dtype=np.uint32)
             if self._single_img:
                 self.observation_space = spaces.Box(low=0, high=255, shape=(self._width, self._height, 3),
                                                     dtype=np.uint32)
@@ -415,9 +415,9 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
                                    )
         rgb_2 = np.reshape(img_arr_2[2], (self._height, self._width, 4))[:, :, :3]
 
-        # (128,128,6)
+        # (256,128,3)
         if self._rgb_only:
-            return np.concatenate([rgb_1, rgb_2], axis=-1)
+            return np.concatenate([rgb_1, rgb_2], axis=0)
         else:
             return [rgb_1, rgb_2, End_Effector_state]
 
@@ -434,14 +434,14 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         gripper_close = np.array([float(p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] - \
                                         p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2)])
         obj_2_tray = np.array([self._dis_obj_2_tray()])
-
+        obj = self._low_dim_full_state()[:3]
         full_state = np.concatenate([End_Effector_state,
                                      delta_obj_h,
                                      collision_box,
                                      collision_obj,
                                      dis_gripper_2_obj,
                                      gripper_close,
-                                     obj_2_tray], axis=-1)
+                                     obj_2_tray, obj], axis=-1)
         return full_state
 
 
@@ -571,13 +571,16 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             elif dis in pyinter.openclosed(0.05, 0.09): rank = 6
 
             # joint Angle difference.
-            elif p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] -\
-            p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0] < 1e-2:
-                rank = 7
-                if self._verbose: print("process: {}\tClose enough but gripper close..".format(self._proce_num))
             else:
-                rank = 8
-                if self._verbose: print("process: {}\tgripper Opening..or Grasping sth but not move up.".format(self._proce_num))
+                gripper_joint_ = p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=11)[0] - \
+                                 p.getJointState(bodyUniqueId=self._kuka.kukaUid, jointIndex=8)[0]
+
+                if gripper_joint_ not in pyinter.openclosed(0.02, 0.4):
+                    rank = 7
+                    if self._verbose: print("process: {}\tNot Grasping something.\tRank 7.\t{:.2f}".format(self._proce_num, gripper_joint_))
+                else:
+                    rank = 8
+                    if self._verbose: print("process: {}\tGrasping something.\tRank 8.\t{:.2f}".format(self._proce_num, gripper_joint_))
             return rank
 
     def _dis_gripper_2_obj(self):
