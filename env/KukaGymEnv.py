@@ -66,7 +66,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
             self.cid = p.connect(p.GUI,
                                  options = "--window_backend=2 --render_device=0")
             p.resetDebugVisualizerCamera(1.3, 180, -41, [0.52, -0.2, -0.33])
-            # p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         else:
             self.cid = p.connect(p.GUI,
                                  options = "--width={} --height={} --window_backend=2 --render_device=1".format(self._width, self._height))
@@ -516,7 +516,7 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         elif dis_to_box <= 0.23:
             self.drop_down = True
             rank = 19
-        if self._verbose: print("process: {}\tPhase_2 !!\trank: {}\tdis_to_box:{.3f}".format(self._proce_num, rank, dis_to_box))
+        if self._verbose: print("process: {}\tPhase_2 !!\trank: {}\tdis_to_box:{:.3f}".format(self._proce_num, rank, dis_to_box))
         return rank
 
     def _rank_1(self):
@@ -599,7 +599,6 @@ class KukaDiverseObjectEnv(Kuka, gym.Env):
         box_pos_xy = np.array(p.getBasePositionAndOrientation(self._kuka.trayUid)[0])[:2]
         dis_to_box = np.sqrt(np.sum((obj_xy - box_pos_xy) ** 2))
         return dis_to_box
-
 
     def _termination(self):
         if self._isTest: return (self._env_step >= self._maxSteps) or self._success
